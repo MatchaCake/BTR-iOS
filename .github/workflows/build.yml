@@ -1,0 +1,22 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host tests (rewriter, hooks, proxy)
+        run: ./tests/run.sh
+      - name: Build arm64 dylib
+        run: ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BTR-iOS-dylib
+          path: build/BTR-iOS.dylib
+          if-no-files-found: error
