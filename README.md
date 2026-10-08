@@ -54,22 +54,97 @@ App 自带播放器 ──Range 请求──> BTR 本地代理（进程内，只
   CDN 返回 200 整文件或错位的区间时，那一块直接丢弃，不会交给播放器。
 - **默认只加速视频轨**。音轨很小，加速收益低；需要时可以在面板里打开。直播流（`live-bvc`）不处理。
 
-## 安装到 LiveContainer
+## 使用说明（LiveContainer）
 
-1. 准备一份**已解密**的哔哩哔哩 IPA（App Store 下载的 IPA 是加密的，LiveContainer 跑不了），
-   在 LiveContainer 里安装。国内版、HD 版、国际版（`com.bstar.intl`）都会启用；
-   bundle ID 不含 `bili`、`danmaku`、`bstar` 的 App 里，BTR 什么也不做。
-2. 从 [Releases](../../releases/latest) 下载最新的 `BTR-iOS.dylib`（main 分支每次构建和测试通过后自动发布，
-   标签为 `build-<编号>`，说明里附有对应提交和 SHA-256）。也可以从 [Actions](../../actions) 下载
-   `BTR-iOS-dylib` 构件，或者在本机执行 `./build.sh`，得到 `build/BTR-iOS.dylib`。
-3. LiveContainer → **Tweaks** 标签 → `+` → **New Folder**，比如命名为 `BTR`；进入文件夹 → `+` →
-   **Import Tweak**，选 `BTR-iOS.dylib`。
-4. 长按哔哩哔哩 → **Settings** → **Tweak Folder** 选 `BTR`。共享（shared）App 要先转成私有（private）
-   才能改这一项，改完可以再转回去。
-5. 启动 App。LiveContainer 会自动用自己的证书给 tweak 签名；签名失败可以在 Tweaks 标签点 **Sign**。
-   不要打开 “Don't Inject TweakLoader”。
-6. 屏幕右侧出现粉色 **BTR** 悬浮球就说明装好了。点它打开设置；悬浮球被隐藏时，**三指长按**屏幕
-   0.8 秒也能打开设置。有内容盖在上面时（例如全屏播放器、弹出页），悬浮球会自动隐藏。
+下面的界面名称来自 LiveContainer 上游源码和[官方 Tweaks 文档](https://livecontainer.github.io/docs/guides/tweaks)
+（2026-09 的 main 分支），中文界面的写法附英文原名。不同版本的 LiveContainer 可能略有出入。
+
+### 1. 准备
+
+- 已经装好 [LiveContainer](https://github.com/LiveContainer/LiveContainer)（需要 iOS / iPadOS 15+，
+  通过 AltStore / SideStore 安装），并且用的是主 LiveContainer（蓝色图标），不是 LiveContainer2。
+  官方文档说明只有主 LiveContainer 和私有 App 能管理 tweak。
+- 一份**已解密**的哔哩哔哩 IPA（App Store 下载的 IPA 是加密的，LiveContainer 跑不了）。在 LiveContainer
+  的 App 列表点右上角 `+`，选这个 IPA 安装。国内版、HD 版、国际版（`com.bstar.intl`）都会启用；
+  bundle ID 不含 `bili`、`danmaku`、`bstar` 的 App 里，BTR 什么也不做。
+- 从 [Releases](../../releases/latest) 下载最新的 `BTR-iOS.dylib` 到“文件” App（main 分支每次构建和测试通过后
+  自动发布，标签为 `build-<编号>`，说明里附有对应提交和 SHA-256）。也可以从 [Actions](../../actions) 下载
+  `BTR-iOS-dylib` 构件，或者在本机执行 `./build.sh`，得到 `build/BTR-iOS.dylib`。
+
+### 2. 建一个 tweak 文件夹并放入 dylib
+
+建议给哔哩哔哩单独建一个文件夹，不要直接放在 Tweaks 根目录：根目录是**全局**文件夹，里面的 tweak 会加载到
+LiveContainer 里的所有 App。
+
+**方法 A：在 LiveContainer 里导入（推荐）**
+
+1. 打开 LiveContainer 底部的 **模块（Tweaks）** 标签。
+2. 点右上角 `+` → **新建文件夹（New folder）**，起个名字，比如 `BTR`。
+3. 点进 `BTR` 文件夹，再点右上角 `+` → **导入模块（Import Tweak）**，在文件选择器里选 `BTR-iOS.dylib`。
+
+**方法 B：用“文件” App 拷贝**
+
+LiveContainer 开启了文件共享，它的 Documents 目录会出现在“文件” App 的“我的 iPhone / 我的 iPad”下
+（文件夹名一般就是 LiveContainer）。私有 App 用的 tweak 在其中的 `Tweaks` 文件夹里：
+
+1. 先按方法 A 的第 1–2 步在 LiveContainer 里建好 `BTR` 文件夹（这样它一定会出现在选择列表里）。
+2. 在“文件” App 里把 `BTR-iOS.dylib` 拷贝到 `LiveContainer/Tweaks/BTR/`。
+
+用“文件” App 放进去的 dylib 不需要手动签名：LiveContainer 每次启动 App 前都会检查 tweak 文件，
+文件有变化或签名失效时自动重新签名。
+
+### 3. 让哔哩哔哩使用这个文件夹
+
+1. 回到 App 列表，**长按**哔哩哔哩 → **设置（Settings）**。
+2. 在“数据”一栏点 **模块文件夹（Tweak Folder）**，选 `BTR`（默认是“无 / None”）。
+3. 如果这一项是灰色、点不动，说明这个 App 是共享 App（shared）。先点同一栏里的
+   **转换为私有App（Convert to Private App）**，设置好模块文件夹后，需要的话再点
+   **转换为共享App（Convert to Shared App）** 转回去，官方文档说明转回后 tweak 仍然有效。
+4. 同一页面里 **不注入TweakLoader（Don't Inject TweakLoader）** 和 **不加载TweakLoader（Don't Load TweakLoader）**
+   都要保持关闭，否则所有 tweak 都不会加载。
+
+### 4. 启动并确认生效
+
+1. 在 LiveContainer 里启动哔哩哔哩。第一次启动前 LiveContainer 会用自己的证书给 tweak 签名；
+   如果提示签名无效，在 **模块（Tweaks）** 标签点右上角的签名按钮（签名图标）强制重签，
+   或在 App 设置里点 **强制重新签名（Force Sign）**。
+2. 屏幕右侧出现粉色 **BTR** 悬浮球就说明加载成功。悬浮球可以拖动；全屏播放器、弹出页等内容盖在上面时会自动隐藏。
+   点悬浮球打开设置面板；悬浮球看不到时，**三指长按**屏幕约 0.8 秒也能打开。
+3. 面板最下面“更多”一栏的“原项目”一行显示版本号（例如 `v0.1.1`），可以用来确认装的是哪个版本。
+
+**怎么看诊断**：先正常打开一个视频播放几秒，再打开面板。
+
+- “运行状态”一栏：
+  - **接管的播放地址**：被改成走本地代理的视频流数量。大于 0 说明加速在工作。
+  - **代理请求**（括号里是回退次数）、**当前线程 / 峰值**、**已下载 / 已交付**、**失败分段 / 备份请求**：
+    代理的实际下载情况。回退次数多说明经常改用 B 站的备用地址。
+- “诊断”一栏：
+  - **检查过的播放地址回复**：BTR 看到的播放地址响应次数，括号里是在 protobuf 层看到的次数。
+    播放后还是 0，说明这个版本的 App 没走 BTR 接管的路径。
+  - **播放器地址**：播放器拿到的 B 站媒体地址条数和其中“已走 BTR”的条数。“已走 BTR”大于 0 说明播放器正在用本地代理。
+  - **最近的请求和播放地址**：点进去能看到最近的 `NSURLSession 请求`（只记主机和路径）、`protobuf 播放回复`、
+    `播放器拿到的地址`（标有“已走 BTR”“未走 BTR→已改写”或“未走 BTR”）。右上角分享按钮会把诊断和完整日志一起导出，
+    “清空”只清这一页。
+- “CDN 节点”一栏：每个节点的状态、速度、累计下载量和进行中的请求数。
+- 反馈问题时，请在“最近的请求和播放地址”页点分享，把导出的文字一起发来
+  （日志不含 Cookie，但会记录节点主机名和请求路径，分享前请自行检查）。
+
+### 5. 更新和停用
+
+**更新到新版本**
+
+1. 从 [Releases](../../releases/latest) 下载新的 `BTR-iOS.dylib`。
+2. LiveContainer → **模块（Tweaks）** → `BTR` 文件夹，把旧的 `BTR-iOS.dylib` **左滑 → 删除（Delete）**，
+   再 `+` → **导入模块（Import Tweak）** 导入新的；或者在“文件” App 里直接覆盖 `Tweaks/BTR/BTR-iOS.dylib`。
+3. 完全退出哔哩哔哩（在多任务界面划掉 LiveContainer），重新启动。LiveContainer 发现文件变了会自动重新签名。
+4. 打开面板，确认“原项目”一行的版本号已经变成新版本。
+
+**停用**
+
+- **临时停用加速**：面板里关掉“启用多线程加速”，从下一个视频开始不再改写播放地址；dylib 仍会加载。
+  只想隐藏悬浮球可以关掉“显示悬浮球”（之后用三指长按打开面板）。
+- **完全不加载**：长按哔哩哔哩 → **设置（Settings）** → **模块文件夹（Tweak Folder）** 选 **无（None）**，
+  或者在 **模块（Tweaks）** 标签里把 `BTR-iOS.dylib`（或整个 `BTR` 文件夹）左滑删除，然后重新启动 App。
 
 ## 设置
 
@@ -83,7 +158,7 @@ App 自带播放器 ──Range 请求──> BTR 本地代理（进程内，只
 | 分块大小 | 1 MiB | 可选 256 KiB 到 4 MiB；为了控制内存，预取窗口最多 48 MiB |
 
 面板里能看到接管了多少播放地址、代理请求数、回退次数、当前和峰值线程、已下载和已交付的字节数，
-以及每个 CDN 节点的状态和速度。**日志**页可以分享完整日志，反馈问题时请附上
+以及每个 CDN 节点的状态和速度（各项含义见上文“怎么看诊断”）。**日志**页可以分享完整日志，反馈问题时请附上
 （日志不含 Cookie；为了排障会记录节点主机名，分享前请自行检查）。
 
 ## 构建与测试
