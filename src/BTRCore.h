@@ -5,7 +5,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-#define BTR_VERSION @"0.1.0"
+#define BTR_VERSION @"0.1.1"
 
 typedef NS_ENUM(NSInteger, BTRCDNMode) {
     BTRCDNModeMainland = 0, // 大陆 CDN（BTR 默认）
@@ -42,6 +42,18 @@ FOUNDATION_EXPORT void BTRLogClear(void);
 - (void)set:(NSString *)key value:(int64_t)value;
 - (int64_t)get:(NSString *)key;
 - (void)reset;
+@end
+
+/// On-device diagnostics: which requests / protobuf replies / player addresses the tweak saw.
+/// Only host + path are kept (never query strings, cookies or bodies).
+@interface BTRDiag : NSObject
+/// Records one observation under `kind`; repeated items are counted instead of duplicated.
++ (void)note:(NSString *)kind item:(NSString *)item;
+/// Records a URL as "host/path" (query dropped).
++ (void)noteURL:(nullable NSURL *)url kind:(NSString *)kind;
+/// Text report of the most recent observations of every kind.
++ (NSString *)dump;
++ (void)reset;
 @end
 
 @interface BTRMedia : NSObject

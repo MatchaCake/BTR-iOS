@@ -42,6 +42,29 @@ NSData *BTRRewriteBody(NSData *data, NSURLResponse *response, NSURL *url) {
     return nil;
 }
 
+NSData *BTRRewriteProtobufReply(NSData *data, NSString *label) {
+    if (!BTRSettings.shared.enabled || !data.length) return nil;
+    NSInteger count = 0;
+    NSData *out = nil;
+    @try {
+        out = [BTRRewriter rewriteProtobuf:data mapper:BTRDefaultMapper() count:&count];
+    } @catch (NSException *e) {
+        BTRLog(@"改写 %@ 时出错：%@", label, e.reason);
+        out = nil;
+    }
+    [BTRStats.shared add:@"inspectedResponses" value:1];
+    [BTRStats.shared add:@"pbReplies" value:1];
+    if (out && count > 0) {
+        [BTRStats.shared add:@"rewrittenResponses" value:1];
+        [BTRStats.shared add:@"rewrittenURLs" value:count];
+        [BTRProxyServer.shared resetBans];
+        BTRLog(@"已接管 %ld 条播放地址：%@（protobuf，%@）", (long)count, label, [BTRMedia formatBytes:(int64_t)data.length]);
+        return out;
+    }
+    BTRLog(@"播放地址回复没有可接管的地址：%@（protobuf，%@）", label, [BTRMedia formatBytes:(int64_t)data.length]);
+    return nil;
+}
+
 static BTRCompletion Wrap(NSURL *url, BTRCompletion handler) {
     return ^(NSData *data, NSURLResponse *response, NSError *error) {
         NSData *out = data;
@@ -91,16 +114,19 @@ static Upload origUpload;
 static SessionFactory origFactory;
 
 static id HookTaskReqCH(id self, SEL _cmd, NSURLRequest *req, BTRCompletion handler) {
+    [BTRDiag noteURL:req.URL kind:@"NSURLSession 请求"];
     if (handler && [BTRRewriter shouldInspectURL:req.URL]) handler = Wrap(req.URL, handler);
     return origTaskReqCH(self, _cmd, req, handler);
 }
 
 static id HookTaskURLCH(id self, SEL _cmd, NSURL *url, BTRCompletion handler) {
+    [BTRDiag noteURL:url kind:@"NSURLSession 请求"];
     if (handler && [BTRRewriter shouldInspectURL:url]) handler = Wrap(url, handler);
     return origTaskURLCH(self, _cmd, url, handler);
 }
 
 static id HookUploadCH(id self, SEL _cmd, NSURLRequest *req, NSData *body, BTRCompletion handler) {
+    [BTRDiag noteURL:req.URL kind:@"NSURLSession 请求"];
     if (handler && [BTRRewriter shouldInspectURL:req.URL]) handler = Wrap(req.URL, handler);
     return origUploadCH(self, _cmd, req, body, handler);
 }
@@ -205,6 +231,7 @@ static BOOL DelegateIsHooked(id delegate) {
 }
 
 static id Mark(NSURLSession *session, NSURLSessionTask *task, NSURL *url) {
+    [BTRDiag noteURL:url kind:@"NSURLSession 请求"];
     if (task && [BTRRewriter shouldInspectURL:url]) {
         if (DelegateIsHooked(session.delegate)) {
             objc_setAssociatedObject(task, kBufferKey, [NSMutableData data], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -250,4 +277,5 @@ void BTRInstallHooks(void) {
         origFactory = (SessionFactory)method_setImplementation(factory, (IMP)HookFactory);
         BTRLog(@"NSURLSession 接管已安装（%s）", class_getName(session));
     });
+    BTRInstallModelHooks();
 }

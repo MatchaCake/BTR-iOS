@@ -34,6 +34,17 @@ App 自带播放器 ──Range 请求──> BTR 本地代理（进程内，只
     没改动的字段逐字节保留。同一消息里**字段号最小**的媒体 URL 是主地址（`DashVideo.base_url=1`、
     `DashItem.base_url=2`、`ResponseUrl.url=4`），其余都是备用地址；
   - JSON（`base_url`、`baseUrl`、`url`）。
+- **protobuf 层接管（0.1.1 起，主路径）**：官方 App 用 gRPC-ObjC（`GRPCStreamingProtoCall`，底层是 Cronet / gRPC core）
+  请求 `PlayViewUnite` / `PlayView`，**不经过 `NSURLSession`**，所以上面的钩子在真机上看不到这些响应。
+  0.1.1 改为接管 `GPBMessage -initWithData:extensionRegistry:error:` / `-mergeFromData:extensionRegistry:`：
+  只对类名以 `PlayViewUniteReply`、`PlayViewReply`、`PlayURLReply` 结尾的回复（不含 `Live`），
+  在解码前用同一个通用 protobuf 改写器改字节，与传输层无关。
+- **播放器层兜底**：`IJKDashStreamItem`（`setBaseUrl:`、`initWithStreamId:…baseUrl:…`）和
+  `IJKDashStreamBridge`（`setUrl:`、`initWithMediaType:…url:backupUrls:`）拿到还没走 BTR 的 B 站媒体地址时改成代理地址；
+  `IJKMediaPlayerItem` 的 `setUrl:` / `willOpenUrl:` 只记录，不修改。每个钩子安装前都核对方法签名，不符就跳过并写日志。
+- **诊断**：面板的“诊断”区显示检查过的播放地址回复次数、播放器拿到的地址是否已走 BTR；
+  “最近的请求和播放地址”页列出最近看到的 `NSURLSession` 请求（只记主机和路径，不记参数）、
+  protobuf 播放回复和播放器地址，分享时会连同日志一起导出。
 - **本地代理**：移植 BTR 的 CDN 规则：大陆 / 海外节点表、用非 akamai 地址做模板换节点、
   只有 akamai 地址时用它做模板、两次 0 字节失败停用节点（4xx 只怪地址不怪节点）、失败后冷却退避、
   测速有效期 90 秒。调度方式：没测过的节点各先分一块试速度，之后按“谁最快能再交一块”分配；
@@ -97,7 +108,8 @@ App 自带播放器 ──Range 请求──> BTR 本地代理（进程内，只
 | 改写器、钩子、代理的主机测试 | ✅ 本机通过 |
 | iOS 模拟器：dlopen 加载、钩子安装、delegate 会话的 playurl 改写、经代理取回 7 MiB 完整数据、悬浮球和设置面板 | ✅ 本机通过（iOS 27 模拟器） |
 | LiveContainer 真机加载 | ⚠️ 未验证 |
-| 真实哔哩哔哩 App 的接口确实经过被接管的 NSURLSession 方法 | ⚠️ 未验证（社区探针显示它用 NSURLSession 和静态链接的 AFNetworking，见致谢） |
+| 真实哔哩哔哩 App 的接口经过被接管的 NSURLSession 方法 | ❌ 首次真机测试：播放后“接管的播放地址”为 0。播放地址走 gRPC-ObjC，0.1.1 改为在 protobuf 解码层和 IJKPlayer 层接管 |
+| protobuf / IJKPlayer 层接管在真机生效 | ⚠️ 未验证（主机测试用仿造的 `GPBMessage` / IJK 类验证） |
 | 播放器接受 `http://127.0.0.1` 地址并通过代理播放 | ⚠️ 未验证 |
 | 真实 B 站 CDN 上的提速效果 | ⚠️ 未验证 |
 

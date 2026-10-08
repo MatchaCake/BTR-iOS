@@ -14,7 +14,7 @@ xcrun --sdk iphoneos clang \
   -Wall -Wextra -Wno-unused-parameter -Werror=incompatible-pointer-types -Werror=objc-method-access \
   -install_name "@rpath/BTR-iOS.dylib" \
   -framework Foundation -framework UIKit -lz \
-  src/BTRCore.m src/BTRRewriter.m src/BTRProxy.m src/BTRHooks.m src/BTRUI.m src/BTRTweak.m \
+  src/BTRCore.m src/BTRRewriter.m src/BTRProxy.m src/BTRHooks.m src/BTRModelHooks.m src/BTRUI.m src/BTRTweak.m \
   -o "$OUT/BTR-iOS.dylib"
 
 # Ad-hoc signature so the Mach-O is valid; LiveContainer re-signs tweaks with its own

@@ -75,6 +75,86 @@ static void PutString(NSMutableData *d, uint32_t f, NSData *s) { Varint(d, (f <<
 static void PutVarint(NSMutableData *d, uint32_t f, uint64_t v) { Varint(d, (f << 3) | 0); Varint(d, v); }
 static NSData *U(NSString *s) { return [s dataUsingEncoding:NSUTF8StringEncoding]; }
 
+#pragma mark - fake app classes (stand-ins for the official app's protobuf runtime and IJKPlayer)
+
+@interface GPBMessage : NSObject
+@property (nonatomic, strong) NSData *raw;
+@property (nonatomic) int merges;
+- (instancetype)initWithData:(NSData *)data extensionRegistry:(id)registry error:(NSError **)error;
+- (void)mergeFromData:(NSData *)data extensionRegistry:(id)registry;
+@end
+@implementation GPBMessage
+- (instancetype)initWithData:(NSData *)data extensionRegistry:(id)registry error:(NSError **)error {
+    if ((self = [super init])) [self mergeFromData:data extensionRegistry:registry]; // like protobuf-objc
+    return self;
+}
+- (void)mergeFromData:(NSData *)data extensionRegistry:(id)registry {
+    NSMutableData *m = [NSMutableData dataWithData:self.raw ?: [NSData data]];
+    [m appendData:data];
+    self.raw = m;
+    self.merges++;
+}
+@end
+@interface BAPIAppPlayeruniteV1PlayViewUniteReply : GPBMessage
+@end
+@implementation BAPIAppPlayeruniteV1PlayViewUniteReply
+@end
+@interface BAPIPgcGatewayPlayerV2PlayViewReply : GPBMessage
+@end
+@implementation BAPIPgcGatewayPlayerV2PlayViewReply
+@end
+@interface BAPIAppViewV1ViewReply : GPBMessage
+@end
+@implementation BAPIAppViewV1ViewReply
+@end
+@interface BAPIPgcGatewayPlayerV1LivePlayViewReply : GPBMessage
+@end
+@implementation BAPIPgcGatewayPlayerV1LivePlayViewReply
+@end
+
+@interface IJKDashStreamItem : NSObject
+@property (nonatomic, copy) NSString *baseUrl;
+- (instancetype)initWithStreamId:(int)streamId bandwidth:(int)bandwidth baseUrl:(NSString *)baseUrl fileSize:(long long)fileSize streamType:(int)streamType codecType:(int)codecType;
+@end
+@implementation IJKDashStreamItem
+- (instancetype)initWithStreamId:(int)streamId bandwidth:(int)bandwidth baseUrl:(NSString *)baseUrl fileSize:(long long)fileSize streamType:(int)streamType codecType:(int)codecType {
+    if ((self = [super init])) _baseUrl = [baseUrl copy]; // ivar, not the setter, like generated code often does
+    return self;
+}
+@end
+@interface IJKDashStreamBridge : NSObject
+@property (nonatomic, strong) NSURL *url;
+@property (nonatomic, copy) NSArray *backupUrls;
+- (instancetype)initWithMediaType:(long long)t codecId:(long long)c qn:(long long)q bandwidth:(long long)b url:(NSURL *)url backupUrls:(NSArray *)backups;
+@end
+@implementation IJKDashStreamBridge
+- (instancetype)initWithMediaType:(long long)t codecId:(long long)c qn:(long long)q bandwidth:(long long)b url:(NSURL *)url backupUrls:(NSArray *)backups {
+    if ((self = [super init])) { _url = url; _backupUrls = [backups copy]; }
+    return self;
+}
+@end
+@interface IJKMediaPlayerItem : NSObject
+@property (nonatomic, copy) NSString *url;
+@property (nonatomic, strong) id opened;
+- (void)willOpenUrl:(id)data;
+@end
+@implementation IJKMediaPlayerItem
+- (void)willOpenUrl:(id)data { self.opened = data; }
+@end
+@interface IJKMediaUrlOpenData : NSObject
+@property (nonatomic, copy) NSString *url;
+@end
+@implementation IJKMediaUrlOpenData
+@end
+// Wrong signature on purpose: the hook must refuse to install.
+@interface IJKMediaAssetStreamSegment : NSObject
+@property (nonatomic) int value;
+- (instancetype)initWithUrl:(int)value;
+@end
+@implementation IJKMediaAssetStreamSegment
+- (instancetype)initWithUrl:(int)value { if ((self = [super init])) _value = value; return self; }
+@end
+
 #pragma mark - tests
 
 static void TestCandidates(void) {
@@ -332,6 +412,87 @@ static void TestHooks(void) {
     BTRSettings.shared.enabled = YES;
 }
 
+static void TestModelHooks(void) {
+    BTRSettings.shared.enabled = YES;
+    BTRSettings.shared.accelerateAudio = NO;
+    BTRInstallHooks(); // also installs the model hooks (idempotent)
+    NSString *prefix = [NSString stringWithFormat:@"http://127.0.0.1:%u/btr/", BTRProxyServer.shared.port];
+
+    CHECK(BTRIsPlayReplyClassName("BAPIAppPlayeruniteV1PlayViewUniteReply"), @"PlayViewUniteReply matches");
+    CHECK(BTRIsPlayReplyClassName("BAPIAppPlayurlV1PlayURLReply"), @"PlayURLReply matches");
+    CHECK(BTRIsPlayReplyClassName("BAPIPgcGatewayPlayerV2PlayViewReply"), @"PlayViewReply matches");
+    CHECK(!BTRIsPlayReplyClassName("BAPIPgcGatewayPlayerV1LivePlayViewReply"), @"live reply ignored");
+    CHECK(!BTRIsPlayReplyClassName("BAPIAppViewV1ViewReply") && !BTRIsPlayReplyClassName(NULL), @"other replies ignored");
+
+    // gRPC-ObjC hands the decoded frame payload to +parseFromData:, i.e. -initWithData:extensionRegistry:error:.
+    NSString *v = nil;
+    NSData *reply = SampleProto(&v);
+    int64_t pbBefore = [BTRStats.shared get:@"pbReplies"];
+    BAPIAppPlayeruniteV1PlayViewUniteReply *m = [[BAPIAppPlayeruniteV1PlayViewUniteReply alloc] initWithData:reply extensionRegistry:nil error:NULL];
+    NSData *dash = Sub(Sub(Sub(m.raw, 1), 5), 2);
+    CHECK([Str(Sub(dash, 1)) hasPrefix:prefix], @"PlayViewUniteReply rewritten at protobuf level: %@", Str(Sub(dash, 1)));
+    CHECK(m.merges == 1 && [BTRStats.shared get:@"pbReplies"] == pbBefore + 1, @"rewritten once, not again by the nested merge");
+    NSArray *decoded = [BTRProxyServer addressesFromProxyPath:[Str(Sub(dash, 1)) substringFromIndex:prefix.length - 5]];
+    CHECK(decoded.count == 3 && [decoded[0] isEqualToString:v], @"proxy url keeps primary + both backups: %@", decoded);
+    CHECK(Strings(dash, 2).count == 2 && [Str(Strings(dash, 2)[0]) hasPrefix:@"https://upos-sz-mirrorcos"], @"backups untouched");
+    CHECK([Sub(Sub(m.raw, 1), 6) isEqualToData:Sub(Sub(reply, 1), 6)], @"audio untouched by default");
+
+    // mergeFromData: directly (some code paths parse into an existing message).
+    BAPIPgcGatewayPlayerV2PlayViewReply *pgc = [BAPIPgcGatewayPlayerV2PlayViewReply new];
+    [pgc mergeFromData:reply extensionRegistry:nil];
+    CHECK([Str(Sub(Sub(Sub(Sub(pgc.raw, 1), 5), 2), 1)) hasPrefix:prefix], @"PlayViewReply rewritten via mergeFromData");
+
+    // Other messages are byte-identical.
+    BAPIAppViewV1ViewReply *other = [[BAPIAppViewV1ViewReply alloc] initWithData:reply extensionRegistry:nil error:NULL];
+    CHECK([other.raw isEqualToData:reply], @"unrelated reply untouched");
+    BAPIPgcGatewayPlayerV1LivePlayViewReply *live = [[BAPIPgcGatewayPlayerV1LivePlayViewReply alloc] initWithData:reply extensionRegistry:nil error:NULL];
+    CHECK([live.raw isEqualToData:reply], @"live reply untouched");
+
+    // Disabled: nothing changes.
+    BTRSettings.shared.enabled = NO;
+    BAPIAppPlayeruniteV1PlayViewUniteReply *off = [[BAPIAppPlayeruniteV1PlayViewUniteReply alloc] initWithData:reply extensionRegistry:nil error:NULL];
+    CHECK([off.raw isEqualToData:reply], @"disabled -> protobuf untouched");
+    BTRSettings.shared.enabled = YES;
+
+    // Player fallback: an address that did not go through BTR is rewritten when the player gets it.
+    NSString *cdn = @"https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/1/2/3-1-100026.m4s?deadline=9";
+    NSString *audio = @"https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/1/2/3-1-30280.m4s?deadline=9";
+    IJKDashStreamItem *item = [[IJKDashStreamItem alloc] initWithStreamId:1 bandwidth:2 baseUrl:cdn fileSize:3 streamType:0 codecType:7];
+    CHECK([item.baseUrl hasPrefix:prefix], @"DashStreamItem init rewritten: %@", item.baseUrl);
+    item.baseUrl = cdn;
+    CHECK([item.baseUrl hasPrefix:prefix], @"DashStreamItem setter rewritten");
+    NSString *already = item.baseUrl;
+    item.baseUrl = already;
+    CHECK([item.baseUrl isEqualToString:already], @"already proxied address left alone");
+    item.baseUrl = audio;
+    CHECK([item.baseUrl isEqualToString:audio], @"audio left alone by default");
+    item.baseUrl = @"https://example.com/a.m4s";
+    CHECK([item.baseUrl isEqualToString:@"https://example.com/a.m4s"], @"non-Bilibili address left alone");
+
+    NSString *backup = @"https://upos-sz-mirrorali.bilivideo.com/upgcxcode/1/2/3-1-100026.m4s?deadline=9";
+    IJKDashStreamBridge *bridge = [[IJKDashStreamBridge alloc] initWithMediaType:1 codecId:7 qn:80 bandwidth:1 url:[NSURL URLWithString:cdn] backupUrls:@[ backup ]];
+    CHECK([bridge.url isKindOfClass:NSURL.class] && [bridge.url.absoluteString hasPrefix:prefix], @"DashStreamBridge keeps NSURL type and is rewritten: %@", bridge.url);
+    NSArray *bd = [BTRProxyServer addressesFromProxyPath:[bridge.url.absoluteString substringFromIndex:prefix.length - 5]];
+    CHECK(bd.count == 2 && [bd[1] isEqualToString:backup], @"bridge backups carried: %@", bd);
+
+    // Observe-only hooks never change what the player opens.
+    IJKMediaPlayerItem *pi = [IJKMediaPlayerItem new];
+    pi.url = cdn;
+    CHECK([pi.url isEqualToString:cdn], @"PlayerItem.url observed, not changed");
+    IJKMediaUrlOpenData *od = [IJKMediaUrlOpenData new];
+    od.url = already;
+    [pi willOpenUrl:od];
+    CHECK(pi.opened == od && [od.url isEqualToString:already], @"willOpenUrl observed, not changed");
+    IJKMediaAssetStreamSegment *seg = [[IJKMediaAssetStreamSegment alloc] initWithUrl:42];
+    CHECK(seg.value == 42, @"hook with an unexpected signature is not installed");
+
+    NSString *diag = [BTRDiag dump];
+    CHECK([diag containsString:@"BAPIAppPlayeruniteV1PlayViewUniteReply"], @"diagnostics list protobuf replies");
+    CHECK([diag containsString:@"willOpenUrl 已走 BTR"], @"diagnostics show the player opening a BTR address");
+    CHECK([diag containsString:@"NSURLSession 请求"], @"diagnostics list NSURLSession requests");
+    CHECK(![diag containsString:@"deadline="] && ![diag containsString:@"bvid="], @"diagnostics drop query strings");
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc < 4) { fprintf(stderr, "usage: BTRTests okPort slowPort badPort\n"); return 2; }
@@ -343,6 +504,7 @@ int main(int argc, const char *argv[]) {
         TestProtobuf();
         TestProxy();
         TestHooks();
+        TestModelHooks();
         printf("%d passed, %d failed\n", passes, failures);
         return failures ? 1 : 0;
     }

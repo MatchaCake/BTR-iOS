@@ -27,14 +27,30 @@ static UIColor *BiliPink(void) { return [UIColor colorWithRed:0xfb / 255.0 green
 #pragma mark - Log viewer
 
 @interface BTRLogViewController : UIViewController
+/// YES: shows the diagnostics (recent requests / protobuf replies / player addresses) instead of the log.
+@property (nonatomic) BOOL diagnostics;
 @end
+
+static NSString *ShareHeader(void) {
+    return [NSString stringWithFormat:@"BTR-iOS %@ / %@ %@ / iOS %@\n", BTR_VERSION,
+            NSBundle.mainBundle.bundleIdentifier, [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],
+            UIDevice.currentDevice.systemVersion];
+}
+
+static NSString *StatsSummary(void) {
+    BTRStats *st = BTRStats.shared;
+    return [NSString stringWithFormat:@"接管 %lld 条 / %lld 次响应；检查过 %lld 次播放地址响应（其中 protobuf 层 %lld 次）；"
+            @"播放器拿到 B 站媒体地址 %lld 次，其中已走 BTR %lld 次、播放器层改写 %lld 次；代理请求 %lld（回退 %lld）\n",
+            [st get:@"rewrittenURLs"], [st get:@"rewrittenResponses"], [st get:@"inspectedResponses"], [st get:@"pbReplies"],
+            [st get:@"playerURLs"], [st get:@"playerProxied"], [st get:@"playerRewritten"], [st get:@"proxyRequests"], [st get:@"fallbacks"]];
+}
 
 @implementation BTRLogViewController {
     UITextView *_text;
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"日志";
+    self.title = self.diagnostics ? @"诊断" : @"日志";
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     _text = [[UITextView alloc] initWithFrame:self.view.bounds];
     _text.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -48,15 +64,18 @@ static UIColor *BiliPink(void) { return [UIColor colorWithRed:0xfb / 255.0 green
     [self reload];
 }
 - (void)reload {
-    _text.text = BTRLogDump();
+    _text.text = self.diagnostics ? [StatsSummary() stringByAppendingFormat:@"\n%@", [BTRDiag dump]] : BTRLogDump();
     if (_text.text.length) [_text scrollRangeToVisible:NSMakeRange(_text.text.length - 1, 1)];
 }
-- (void)clear { BTRLogClear(); [self reload]; }
+- (void)clear {
+    if (self.diagnostics) [BTRDiag reset];
+    else BTRLogClear();
+    [self reload];
+}
 - (void)share:(UIBarButtonItem *)sender {
-    NSString *header = [NSString stringWithFormat:@"BTR-iOS %@ / %@ %@ / iOS %@\n", BTR_VERSION,
-                        NSBundle.mainBundle.bundleIdentifier, [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],
-                        UIDevice.currentDevice.systemVersion];
-    UIActivityViewController *a = [[UIActivityViewController alloc] initWithActivityItems:@[ [header stringByAppendingString:BTRLogDump()] ] applicationActivities:nil];
+    // Logs and diagnostics are always shared together: one file answers "which path does the app use".
+    NSString *text = [NSString stringWithFormat:@"%@%@\n%@\n==== 日志 ====\n%@", ShareHeader(), StatsSummary(), [BTRDiag dump], BTRLogDump()];
+    UIActivityViewController *a = [[UIActivityViewController alloc] initWithActivityItems:@[ text ] applicationActivities:nil];
     a.popoverPresentationController.barButtonItem = sender;
     [self presentViewController:a animated:YES completion:nil];
 }
@@ -64,7 +83,7 @@ static UIColor *BiliPink(void) { return [UIColor colorWithRed:0xfb / 255.0 green
 
 #pragma mark - Settings panel
 
-typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRSectionStatus, BTRSectionNodes, BTRSectionMore, BTRSectionCount };
+typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRSectionStatus, BTRSectionDiag, BTRSectionNodes, BTRSectionMore, BTRSectionCount };
 
 @interface BTRSettingsViewController : UITableViewController
 @end
@@ -90,7 +109,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
         typeof(self) s = weakSelf;
         if (!s) { [t invalidate]; return; }
         s->_nodes = BTRProxyServer.shared.hostStatus;
-        [s.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(BTRSectionStatus, 2)] withRowAnimation:UITableViewRowAnimationNone];
+        [s.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(BTRSectionStatus, 3)] withRowAnimation:UITableViewRowAnimationNone];
     }];
 }
 
@@ -109,6 +128,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
         case BTRSectionSwitches: return @"加速";
         case BTRSectionCDN: return @"CDN 与线程";
         case BTRSectionStatus: return @"运行状态";
+        case BTRSectionDiag: return @"诊断";
         case BTRSectionNodes: return @"CDN 节点";
         default: return @"更多";
     }
@@ -116,6 +136,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == BTRSectionSwitches) return @"改动从下一次打开视频（下一次获取播放地址）开始生效。";
+    if (section == BTRSectionDiag) return @"播放一个视频后看这里：“播放地址回复”为 0 说明 App 没走被接管的接口；“播放器地址”里出现“已走 BTR”说明播放器在用本地代理。反馈问题时请在“诊断”页点分享，日志会一起导出。";
     if (section == BTRSectionMore) return @"移植自 MrTangLuyao/Bilibili-thread-ripper（MIT）。非官方实验项目，不绕过会员、登录、地区或清晰度限制。";
     return nil;
 }
@@ -125,6 +146,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
         case BTRSectionSwitches: return 3;
         case BTRSectionCDN: return 4;
         case BTRSectionStatus: return 6;
+        case BTRSectionDiag: return 3;
         case BTRSectionNodes: return MAX(1, (NSInteger)MIN(_nodes.count, 12));
         default: return 3;
     }
@@ -173,6 +195,13 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
             if (ip.row == 3) return [self cell:@"当前线程 / 峰值" detail:[NSString stringWithFormat:@"%lld / %lld", MAX(0, [st get:@"activeThreads"]), [st get:@"maxThreads"]]];
             if (ip.row == 4) return [self cell:@"已下载 / 已交付" detail:[NSString stringWithFormat:@"%@ / %@", [BTRMedia formatBytes:[st get:@"bytesDownloaded"]], [BTRMedia formatBytes:[st get:@"bytesServed"]]]];
             return [self cell:@"失败分段 / 备份请求" detail:[NSString stringWithFormat:@"%lld / %lld", [st get:@"pieceFailures"], [st get:@"hedges"]]];
+        }
+        case BTRSectionDiag: {
+            if (ip.row == 0) return [self cell:@"检查过的播放地址回复" detail:[NSString stringWithFormat:@"%lld 次（protobuf %lld）", [st get:@"inspectedResponses"], [st get:@"pbReplies"]]];
+            if (ip.row == 1) return [self cell:@"播放器地址" detail:[NSString stringWithFormat:@"%lld 条 · 已走 BTR %lld", [st get:@"playerURLs"], [st get:@"playerProxied"] + [st get:@"playerRewritten"]]];
+            UITableViewCell *c = [self cell:@"最近的请求和播放地址" detail:nil];
+            c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            return c;
         }
         case BTRSectionNodes: {
             if (!_nodes.count) return [self cell:@"还没有下载过" detail:nil];
@@ -263,9 +292,13 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
             NSArray *values = @[ @256, @512, @1024, @2048, @4096 ];
             [self choose:@"分块大小" options:@[ @"256 KiB", @"512 KiB", @"1 MiB（推荐）", @"2 MiB", @"4 MiB" ] from:ip handler:^(NSInteger i) { s.chunkKB = [values[i] integerValue]; }];
         }
+    } else if (ip.section == BTRSectionDiag && ip.row == 2) {
+        BTRLogViewController *vc = [BTRLogViewController new];
+        vc.diagnostics = YES;
+        [self.navigationController pushViewController:vc animated:YES];
     } else if (ip.section == BTRSectionMore) {
         if (ip.row == 0) [self.navigationController pushViewController:[BTRLogViewController new] animated:YES];
-        else if (ip.row == 1) { [BTRStats.shared reset]; [tableView reloadData]; }
+        else if (ip.row == 1) { [BTRStats.shared reset]; [BTRDiag reset]; [tableView reloadData]; }
         else [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/MrTangLuyao/Bilibili-thread-ripper"] options:@{} completionHandler:nil];
     }
 }

@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 mkdir -p build
 xcrun clang -fobjc-arc -fmodules -DBTR_TESTING -O1 -g -Wall -Wno-unused-parameter \
   -framework Foundation -lz \
-  src/BTRCore.m src/BTRRewriter.m src/BTRProxy.m src/BTRHooks.m tests/BTRTests.m \
+  src/BTRCore.m src/BTRRewriter.m src/BTRProxy.m src/BTRHooks.m src/BTRModelHooks.m tests/BTRTests.m \
   -o build/BTRTests
 
 OK=18731; SLOW=18732; BAD=18733

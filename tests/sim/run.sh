@@ -8,7 +8,7 @@ APP=build/sim/BTRSim.app
 rm -rf build/sim && mkdir -p "$APP"
 xcrun --sdk iphonesimulator clang -target "$ARCH-apple-ios14.0-simulator" -isysroot "$SDK" \
   -dynamiclib -fobjc-arc -fmodules -DBTR_TESTING -framework Foundation -framework UIKit -lz \
-  src/BTRCore.m src/BTRRewriter.m src/BTRProxy.m src/BTRHooks.m src/BTRUI.m src/BTRTweak.m \
+  src/BTRCore.m src/BTRRewriter.m src/BTRProxy.m src/BTRHooks.m src/BTRModelHooks.m src/BTRUI.m src/BTRTweak.m \
   -install_name @rpath/BTR-iOS.dylib -o "$APP/BTR-iOS.dylib"
 xcrun --sdk iphonesimulator clang -target "$ARCH-apple-ios14.0-simulator" -isysroot "$SDK" \
   -fobjc-arc -fmodules -framework Foundation -framework UIKit tests/sim/main.m -o "$APP/BTRSim"

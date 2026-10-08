@@ -145,6 +145,69 @@ void BTRLogClear(void) {
 }
 @end
 
+#pragma mark - Diagnostics
+
+static NSMutableDictionary<NSString *, NSMutableArray<NSMutableDictionary *> *> *gDiag;
+static NSMutableArray<NSString *> *gDiagKinds;
+static NSLock *gDiagLock;
+static const NSUInteger kDiagPerKind = 40;
+
+@implementation BTRDiag
++ (void)setup {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ gDiag = [NSMutableDictionary dictionary]; gDiagKinds = [NSMutableArray array]; gDiagLock = [NSLock new]; });
+}
++ (void)note:(NSString *)kind item:(NSString *)item {
+    if (!kind.length || !item.length) return;
+    [self setup];
+    if (item.length > 160) item = [[item substringToIndex:160] stringByAppendingString:@"…"];
+    [gDiagLock lock];
+    NSMutableArray *list = gDiag[kind];
+    if (!list) { list = gDiag[kind] = [NSMutableArray array]; [gDiagKinds addObject:kind]; }
+    NSMutableDictionary *hit = nil;
+    for (NSMutableDictionary *e in list) if ([e[@"item"] isEqualToString:item]) { hit = e; break; }
+    if (hit) {
+        hit[@"count"] = @([hit[@"count"] longLongValue] + 1);
+        [list removeObject:hit];
+    } else {
+        hit = [@{ @"item": item, @"count": @1 } mutableCopy];
+    }
+    hit[@"time"] = NSDate.date;
+    [list addObject:hit]; // most recent last
+    if (list.count > kDiagPerKind) [list removeObjectsInRange:NSMakeRange(0, list.count - kDiagPerKind)];
+    [gDiagLock unlock];
+}
++ (void)noteURL:(NSURL *)url kind:(NSString *)kind {
+    if (!url) return;
+    NSString *host = url.host ?: @"?";
+    if (url.port) host = [host stringByAppendingFormat:@":%@", url.port];
+    [self note:kind item:[host stringByAppendingString:url.path.length ? url.path : @"/"]];
+}
++ (NSString *)dump {
+    [self setup];
+    static NSDateFormatter *fmt;
+    NSMutableString *s = [NSMutableString string];
+    [gDiagLock lock];
+    if (!fmt) { fmt = [NSDateFormatter new]; fmt.dateFormat = @"HH:mm:ss"; }
+    for (NSString *kind in gDiagKinds) {
+        NSArray *list = gDiag[kind];
+        [s appendFormat:@"== %@（最近 %lu 项，新的在前）==\n", kind, (unsigned long)list.count];
+        for (NSDictionary *e in list.reverseObjectEnumerator)
+            [s appendFormat:@"%@ ×%@ %@\n", [fmt stringFromDate:e[@"time"]], e[@"count"], e[@"item"]];
+        [s appendString:@"\n"];
+    }
+    [gDiagLock unlock];
+    return s.length ? s : @"还没有观察到任何请求。打开一个视频播放几秒后再来看。\n";
+}
++ (void)reset {
+    [self setup];
+    [gDiagLock lock];
+    [gDiag removeAllObjects];
+    [gDiagKinds removeAllObjects];
+    [gDiagLock unlock];
+}
+@end
+
 #pragma mark - Media / CDN
 
 @implementation BTRMedia
