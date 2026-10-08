@@ -48,7 +48,9 @@ App 自带播放器 ──Range 请求──> BTR 本地代理（进程内，只
 1. 准备一份**已解密**的哔哩哔哩 IPA（App Store 下载的 IPA 是加密的，LiveContainer 跑不了），
    在 LiveContainer 里安装。国内版、HD 版、国际版（`com.bstar.intl`）都会启用；
    bundle ID 不含 `bili`、`danmaku`、`bstar` 的 App 里，BTR 什么也不做。
-2. 从 [Actions](../../actions) 下载 `BTR-iOS-dylib`，或者在本机执行 `./build.sh`，得到 `build/BTR-iOS.dylib`。
+2. 从 [Releases](../../releases/latest) 下载最新的 `BTR-iOS.dylib`（main 分支每次构建和测试通过后自动发布，
+   标签为 `build-<编号>`，说明里附有对应提交和 SHA-256）。也可以从 [Actions](../../actions) 下载
+   `BTR-iOS-dylib` 构件，或者在本机执行 `./build.sh`，得到 `build/BTR-iOS.dylib`。
 3. LiveContainer → **Tweaks** 标签 → `+` → **New Folder**，比如命名为 `BTR`；进入文件夹 → `+` →
    **Import Tweak**，选 `BTR-iOS.dylib`。
 4. 长按哔哩哔哩 → **Settings** → **Tweak Folder** 选 `BTR`。共享（shared）App 要先转成私有（private）
