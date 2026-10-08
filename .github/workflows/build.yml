@@ -28,16 +28,29 @@ jobs:
           [ "$(lipo -archs "$f")" = "arm64" ]
           # LC_BUILD_VERSION platform 2 = iOS device (7 would be iOS simulator)
           otool -l "$f" | grep -A3 LC_BUILD_VERSION | grep -Eq 'platform (2|IOS)$'
+      - name: Read version (src/BTRCore.h BTR_VERSION) and check the dylib reports it
+        id: version
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^#define BTR_VERSION @"\(.*\)"$/\1/p' src/BTRCore.h)
+          echo "BTR_VERSION=${v}"
+          echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::BTR_VERSION '${v}' is not X.Y.Z"; exit 1; }
+          strings -a build/BTR-iOS.dylib | grep -qxF "$v" || { echo "::error::dylib does not contain version string ${v}"; exit 1; }
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: BTR-iOS-dylib
           path: build/BTR-iOS.dylib
           if-no-files-found: error
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
   release:
-    # Only publish from pushes to main, and only after build + tests succeeded.
+    # Publishes v<BTR_VERSION> from main after build + tests succeed. A version is released
+    # once: if tag v<BTR_VERSION> already exists the job does nothing. To ship a new version,
+    # bump BTR_VERSION in src/BTRCore.h and push to main.
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -45,48 +58,44 @@ jobs:
       group: release-main
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
       - uses: actions/download-artifact@v4
         with:
           name: BTR-iOS-dylib
           path: dist
-      - name: Create GitHub Release
+      - name: Create GitHub Release v${{ needs.build.outputs.version }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: build-${{ github.run_number }}
+          VERSION: ${{ needs.build.outputs.version }}
           SHA: ${{ github.sha }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
+          test -n "$VERSION"
+          tag="v${VERSION}"
+          if gh api "repos/${GH_REPO}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            echo "::notice::${tag} already exists; bump BTR_VERSION in src/BTRCore.h to publish a new release."
+            exit 0
+          fi
           asset=dist/BTR-iOS.dylib
           test -s "$asset"
-          short=${SHA:0:7}
           sum=$(sha256sum "$asset" | cut -d' ' -f1)
           size=$(stat -c %s "$asset")
           {
-            echo "Automated build from \`main\`."
+            cat .github/release-notes.md
             echo
-            echo "- Commit: ${SHA}"
-            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}"
-            echo "- Asset: \`BTR-iOS.dylib\` (arm64, iphoneos, ad-hoc signed), ${size} bytes"
-            echo "- SHA-256: \`${sum}\`"
+            echo "---"
             echo
-            echo "Install: LiveContainer -> Tweaks -> your folder -> + -> Import Tweak -> BTR-iOS.dylib"
-            echo
-            echo "### Commit message"
-            echo
-            echo '```'
-            printf '%s\n' "$COMMIT_MSG"
-            echo '```'
+            echo "- 版本：${VERSION}（面板“更多 → 原项目”显示 \`v${VERSION}\`）"
+            echo "- 提交：${SHA}"
+            echo "- 构建：${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- 文件：\`BTR-iOS.dylib\`（arm64，iphoneos，ad-hoc 签名），${size} 字节"
+            echo "- SHA-256：\`${sum}\`"
           } > notes.md
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            # Re-run of the same workflow run: refresh the asset instead of failing.
-            gh release upload "$TAG" "$asset" --clobber
-            gh release edit "$TAG" --notes-file notes.md --latest
-          else
-            gh release create "$TAG" "$asset" \
-              --target "$SHA" \
-              --title "BTR-iOS ${TAG} (${short})" \
-              --notes-file notes.md \
-              --latest
-          fi
+          gh release create "$tag" "$asset" \
+            --target "$SHA" \
+            --title "BTR-iOS ${VERSION}" \
+            --notes-file notes.md \
+            --latest
