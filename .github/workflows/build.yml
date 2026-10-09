@@ -24,10 +24,10 @@ jobs:
           f=build/BTR-iOS.dylib
           file "$f"
           lipo -info "$f"
-          file "$f" | grep -q 'Mach-O 64-bit dynamically linked shared library arm64'
+          file "$f" | grep 'Mach-O 64-bit dynamically linked shared library arm64' >/dev/null
           [ "$(lipo -archs "$f")" = "arm64" ]
           # LC_BUILD_VERSION platform 2 = iOS device (7 would be iOS simulator)
-          otool -l "$f" | grep -A3 LC_BUILD_VERSION | grep -Eq 'platform (2|IOS)$'
+          otool -l "$f" | grep -A3 LC_BUILD_VERSION | grep -E 'platform (2|IOS)$' >/dev/null
       - name: Read version (src/BTRCore.h BTR_VERSION) and check the dylib reports it
         id: version
         run: |
@@ -35,7 +35,8 @@ jobs:
           v=$(sed -n 's/^#define BTR_VERSION @"\(.*\)"$/\1/p' src/BTRCore.h)
           echo "BTR_VERSION=${v}"
           echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::BTR_VERSION '${v}' is not X.Y.Z"; exit 1; }
-          strings -a build/BTR-iOS.dylib | grep -qxF "$v" || { echo "::error::dylib does not contain version string ${v}"; exit 1; }
+          # No grep -q here: with pipefail, grep exiting early makes strings fail on a closed pipe.
+          strings -a build/BTR-iOS.dylib | grep -xF "$v" >/dev/null || { echo "::error::dylib does not contain version string ${v}"; exit 1; }
           echo "version=${v}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
