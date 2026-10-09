@@ -91,6 +91,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
 @implementation BTRSettingsViewController {
     NSTimer *_timer;
     NSArray<NSDictionary *> *_nodes;
+    BOOL _updatingNodes;
 }
 
 - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
@@ -136,6 +137,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == BTRSectionSwitches) return @"改动从下一次打开视频（下一次获取播放地址）开始生效。";
+    if (section == BTRSectionCDN) return @"“更新节点列表”从原项目 GitHub 仓库（失败时用 jsDelivr 镜像）读取最新的大陆 / 海外节点表，只接受 B 站自己的节点域名，立即生效；失败时保留当前列表。";
     if (section == BTRSectionDiag) return @"播放一个视频后看这里：“播放地址回复”为 0 说明 App 没走被接管的接口；“播放器地址”里出现“已走 BTR”说明播放器在用本地代理。反馈问题时请在“诊断”页点分享，日志会一起导出。";
     if (section == BTRSectionMore) return @"移植自 MrTangLuyao/Bilibili-thread-ripper（MIT）。非官方实验项目，不绕过会员、登录、地区或清晰度限制。";
     return nil;
@@ -144,7 +146,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case BTRSectionSwitches: return 3;
-        case BTRSectionCDN: return 4;
+        case BTRSectionCDN: return BTRNodeList.shared.isBuiltin ? 5 : 6;
         case BTRSectionStatus: return 6;
         case BTRSectionDiag: return 3;
         case BTRSectionNodes: return MAX(1, (NSInteger)MIN(_nodes.count, 12));
@@ -184,7 +186,18 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
             if (ip.row == 0) c = [self cell:@"CDN 模式" detail:BTRCDNModeName(s.mode)];
             else if (ip.row == 1) c = [self cell:@"自定义节点" detail:s.customHosts.count ? [NSString stringWithFormat:@"%lu 个", (unsigned long)s.customHosts.count] : @"未设置"];
             else if (ip.row == 2) c = [self cell:@"线程数" detail:[NSString stringWithFormat:@"%ld", (long)s.threads]];
-            else c = [self cell:@"分块大小" detail:[BTRMedia formatBytes:s.chunkKB * 1024]];
+            else if (ip.row == 3) c = [self cell:@"分块大小" detail:[BTRMedia formatBytes:s.chunkKB * 1024]];
+            else if (ip.row == 4) {
+                c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+                c.textLabel.text = _updatingNodes ? @"正在更新节点列表…" : @"更新节点列表";
+                c.textLabel.textColor = BiliPink();
+                c.detailTextLabel.text = BTRNodeList.shared.summary;
+                c.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+                return c;
+            } else {
+                c = [self cell:@"恢复内置节点列表" detail:nil];
+                return c;
+            }
             c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             return c;
         }
@@ -253,6 +266,26 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
     [self presentViewController:a animated:YES completion:nil];
 }
 
+- (void)alert:(NSString *)title message:(NSString *)message {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)updateNodeList {
+    if (_updatingNodes) return;
+    _updatingNodes = YES;
+    [self.tableView reloadData];
+    __weak typeof(self) weakSelf = self;
+    [BTRNodeList.shared updateWithCompletion:^(BTRNodeUpdateResult *r) {
+        typeof(self) s = weakSelf;
+        if (!s) return;
+        s->_updatingNodes = NO;
+        [s.tableView reloadData];
+        [s alert:r.ok ? @"节点列表" : @"节点列表更新失败" message:r.ok ? [NSString stringWithFormat:@"%@\n%@", r.message, BTRNodeList.shared.summary] : r.message];
+    }];
+}
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tableView deselectRowAtIndexPath:ip animated:YES];
     BTRSettings *s = BTRSettings.shared;
@@ -285,10 +318,16 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
                 [self.tableView reloadData];
             }]];
             [self presentViewController:a animated:YES completion:nil];
+        } else if (ip.row == 4) {
+            [self updateNodeList];
+        } else if (ip.row == 5) {
+            [BTRNodeList.shared restoreBuiltin];
+            [self.tableView reloadData];
+            [self alert:@"已恢复内置节点列表" message:BTRNodeList.shared.summary];
         } else if (ip.row == 2) {
             NSArray *values = @[ @4, @8, @16, @32, @64 ];
             [self choose:@"线程数（同一分段的并发上限）" options:@[ @"4", @"8（推荐）", @"16", @"32", @"64" ] from:ip handler:^(NSInteger i) { s.threads = [values[i] integerValue]; }];
-        } else {
+        } else if (ip.row == 3) {
             NSArray *values = @[ @256, @512, @1024, @2048, @4096 ];
             [self choose:@"分块大小" options:@[ @"256 KiB", @"512 KiB", @"1 MiB（推荐）", @"2 MiB", @"4 MiB" ] from:ip handler:^(NSInteger i) { s.chunkKB = [values[i] integerValue]; }];
         }

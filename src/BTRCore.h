@@ -5,7 +5,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-#define BTR_VERSION @"0.1.1"
+#define BTR_VERSION @"0.1.2"
 
 typedef NS_ENUM(NSInteger, BTRCDNMode) {
     BTRCDNModeMainland = 0, // 大陆 CDN（BTR 默认）
@@ -56,7 +56,48 @@ FOUNDATION_EXPORT void BTRLogClear(void);
 + (void)reset;
 @end
 
+/// Result of one "更新节点列表" attempt.
+@interface BTRNodeUpdateResult : NSObject
+@property (nonatomic) BOOL ok;
+@property (nonatomic) NSInteger added;    // hosts new to a list (mainland + overseas)
+@property (nonatomic) NSInteger removed;  // hosts dropped from a list
+@property (nonatomic, copy) NSString *message; // Chinese, shown to the user
+@end
+
+/// The mainland / overseas CDN node lists. Built-in lists come from upstream BTR
+/// (src/cdn-resolver.js); "更新节点列表" re-reads that same file from GitHub (with jsDelivr
+/// mirrors as fallback), validates it and persists it. Any problem keeps the current lists.
+@interface BTRNodeList : NSObject
++ (instancetype)shared;
+- (instancetype)initWithDefaults:(NSUserDefaults *)defaults NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+@property (class, readonly) NSArray<NSString *> *builtinMainland;
+@property (class, readonly) NSArray<NSString *> *builtinOverseas;
+/// Upstream file on raw.githubusercontent.com first, then jsDelivr mirrors.
+@property (class, readonly) NSArray<NSURL *> *sourceURLs;
+@property (readonly) NSArray<NSString *> *mainland;
+@property (readonly) NSArray<NSString *> *overseas;
+@property (readonly) BOOL isBuiltin;
+@property (readonly, nullable) NSDate *updatedAt;
+@property (readonly, nullable) NSString *sourceHost;
+/// Only Bilibili's own node names may come from the network: *.bilivideo.com/.cn/.net and upos-*.akamaized.net.
++ (BOOL)isAllowedNodeHost:(NSString *)host;
+/// Extracts MAINLAND_HOSTS / OVERSEAS_HOSTS from upstream cdn-resolver.js. Returns
+/// @{ @"mainland": …, @"overseas": … } or nil with a reason. Every entry must pass
+/// isAllowedNodeHost, each list must have 1…32 entries.
++ (nullable NSDictionary<NSString *, NSArray<NSString *> *> *)parseUpstreamSource:(NSString *)text error:(NSString *_Nullable *_Nullable)error;
+/// Validates, persists and applies new lists (takes effect for the next segment request).
+- (BTRNodeUpdateResult *)applyMainland:(NSArray<NSString *> *)mainland overseas:(NSArray<NSString *> *)overseas source:(nullable NSString *)sourceHost;
+- (void)restoreBuiltin;
+/// Tries `urls` in order; completion runs on the main queue.
+- (void)updateFromURLs:(NSArray<NSURL *> *)urls completion:(void (^)(BTRNodeUpdateResult *result))completion;
+- (void)updateWithCompletion:(void (^)(BTRNodeUpdateResult *result))completion;
+/// "内置 · 大陆 8 / 海外 4" or "10-09 09:30 更新 · 大陆 8 / 海外 4".
+- (NSString *)summary;
+@end
+
 @interface BTRMedia : NSObject
+/// Current lists (BTRNodeList.shared): the updated ones if any, else the built-in ones.
 @property (class, readonly) NSArray<NSString *> *mainlandHosts;
 @property (class, readonly) NSArray<NSString *> *overseasHosts;
 + (BOOL)isMediaURL:(nullable NSString *)url;

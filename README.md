@@ -167,6 +167,16 @@ LiveContainer 开启了文件共享，它的 Documents 目录会出现在“文�
 | 自定义节点 | 空 | 只接受 B 站视频服务器（bilivideo.com、akamaized.net 等），最多 32 个，为空时按大陆 CDN |
 | 线程数 | 8 | 一个请求同时下载的块数上限，可选 4 / 8 / 16 / 32 / 64 |
 | 分块大小 | 1 MiB | 可选 256 KiB 到 4 MiB；为了控制内存，预取窗口最多 48 MiB |
+| 更新节点列表 | 内置列表 | 0.1.2 起。点一下从原项目仓库读取最新的大陆 / 海外节点表（见下文），立即生效，不用重启 |
+| 恢复内置节点列表 | | 更新过之后才出现，回到 dylib 自带的节点表 |
+
+**更新节点列表**：原项目没有单独的节点清单文件，节点表就写在它的
+[`src/cdn-resolver.js`](https://github.com/MrTangLuyao/Bilibili-thread-ripper/blob/main/src/cdn-resolver.js)
+（`MAINLAND_HOSTS` / `OVERSEAS_HOSTS`）里。BTR-iOS 依次尝试 `raw.githubusercontent.com`、
+`fastly.jsdelivr.net`、`cdn.jsdelivr.net` 读取这个文件，只接受 `*.bilivideo.com` / `.cn` / `.net` 和
+`upos-*.akamaized.net` 这样的 B 站节点域名，每组 1–32 个；有任何一个不合格就整份不用。成功后保存在本机，
+面板显示“月-日 时:分 更新 · 大陆 N / 海外 N”，弹窗里显示新增和移除了几个；失败时提示原因并继续用当前列表。
+保存的列表损坏时自动退回内置列表。原项目的节点表从 2026-08 首次发布以来还没变过，所以多数时候结果是“已是最新”。
 
 面板里能看到接管了多少播放地址、代理请求数、回退次数、当前和峰值线程、已下载和已交付的字节数，
 以及每个 CDN 节点的状态和速度（各项含义见上文“怎么看诊断”）。**日志**页可以分享完整日志，反馈问题时请附上
@@ -178,7 +188,7 @@ LiveContainer 开启了文件共享，它的 Documents 目录会出现在“文�
 
 ```bash
 ./build.sh          # 生成 build/BTR-iOS.dylib（arm64，iOS 14+，ad-hoc 签名）
-./tests/run.sh      # macOS 上的主机测试：CDN 规则、JSON / protobuf / gRPC 改写、NSURLSession 钩子、本地代理
+./tests/run.sh      # macOS 上的主机测试：CDN 规则、节点列表更新、JSON / protobuf / gRPC 改写、NSURLSession 钩子、本地代理
 ./tests/sim/run.sh  # iOS 模拟器冒烟测试：模仿 TweakLoader 用 dlopen 加载，走一遍完整链路并截图
 ```
 
@@ -203,6 +213,7 @@ LiveContainer 开启了文件共享，它的 Documents 目录会出现在“文�
 | 播放器接受 `http://127.0.0.1` 地址并通过代理播放 | ✅ 真机通过：代理请求 15 次，回退 0 次 |
 | 真实 B 站 CDN 上的多节点并行下载 | ✅ 真机通过：分块从约 7 个 CDN 节点并行下载（没有做系统的测速对比） |
 | 其他哔哩哔哩版本（HD 版、国际版、更旧或更新的版本） | ⚠️ 未验证 |
+| 0.1.2“更新节点列表”：解析原项目文件、域名校验、保存与恢复、多来源回退 | ✅ 主机测试通过；面板显示在模拟器里确认过；真机未测，国内网络能否连上 GitHub / jsDelivr 未测 |
 
 ## 已知限制和风险
 

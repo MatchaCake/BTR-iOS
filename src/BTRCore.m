@@ -212,16 +212,8 @@ static const NSUInteger kDiagPerKind = 40;
 
 @implementation BTRMedia
 
-+ (NSArray<NSString *> *)mainlandHosts {
-    return @[ @"upos-sz-mirrorali.bilivideo.com", @"upos-sz-mirrorhw.bilivideo.com", @"upos-sz-mirrorbos.bilivideo.com",
-              @"upos-sz-mirror08c.bilivideo.com", @"upos-sz-mirrorbd.bilivideo.com", @"upos-sz-mirror14b.bilivideo.com",
-              @"upos-sz-estgoss.bilivideo.com", @"upos-sz-mirrorcos.bilivideo.com" ];
-}
-
-+ (NSArray<NSString *> *)overseasHosts {
-    return @[ @"upos-sz-mirrorcosov.bilivideo.com", @"upos-sz-mirroraliov.bilivideo.com",
-              @"cn-hk-eq-01-01.bilivideo.com", @"cn-hk-eq-01-03.bilivideo.com" ];
-}
++ (NSArray<NSString *> *)mainlandHosts { return BTRNodeList.shared.mainland; }
++ (NSArray<NSString *> *)overseasHosts { return BTRNodeList.shared.overseas; }
 
 static NSRegularExpression *MediaHostRE(void) {
     static NSRegularExpression *re;
@@ -353,6 +345,230 @@ static void AddUnique(NSMutableArray *list, NSString *value) {
     if (b < 1024 * 1024) return [NSString stringWithFormat:@"%.1f KiB", b / 1024];
     if (b < 1024.0 * 1024 * 1024) return [NSString stringWithFormat:@"%.1f MiB", b / 1048576];
     return [NSString stringWithFormat:@"%.2f GiB", b / 1073741824];
+}
+
+@end
+
+#pragma mark - Node list update
+
+@implementation BTRNodeUpdateResult
+@end
+
+static NSString *const kNodesKey = @"BTRiOS.nodes";
+static const NSUInteger kMaxNodesPerList = 32;
+static const NSUInteger kMaxSourceBytes = 512 * 1024;
+
+@implementation BTRNodeList {
+    NSUserDefaults *_d;
+    NSArray<NSString *> *_mainland, *_overseas;
+    NSDate *_updatedAt;
+    NSString *_source;
+}
+
++ (instancetype)shared {
+    static BTRNodeList *s;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [[BTRNodeList alloc] initWithDefaults:NSUserDefaults.standardUserDefaults]; });
+    return s;
+}
+
++ (NSArray<NSString *> *)builtinMainland {
+    return @[ @"upos-sz-mirrorali.bilivideo.com", @"upos-sz-mirrorhw.bilivideo.com", @"upos-sz-mirrorbos.bilivideo.com",
+              @"upos-sz-mirror08c.bilivideo.com", @"upos-sz-mirrorbd.bilivideo.com", @"upos-sz-mirror14b.bilivideo.com",
+              @"upos-sz-estgoss.bilivideo.com", @"upos-sz-mirrorcos.bilivideo.com" ];
+}
+
++ (NSArray<NSString *> *)builtinOverseas {
+    return @[ @"upos-sz-mirrorcosov.bilivideo.com", @"upos-sz-mirroraliov.bilivideo.com",
+              @"cn-hk-eq-01-01.bilivideo.com", @"cn-hk-eq-01-03.bilivideo.com" ];
+}
+
++ (NSArray<NSURL *> *)sourceURLs {
+    return @[ [NSURL URLWithString:@"https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/src/cdn-resolver.js"],
+              [NSURL URLWithString:@"https://fastly.jsdelivr.net/gh/MrTangLuyao/Bilibili-thread-ripper@main/src/cdn-resolver.js"],
+              [NSURL URLWithString:@"https://cdn.jsdelivr.net/gh/MrTangLuyao/Bilibili-thread-ripper@main/src/cdn-resolver.js"] ];
+}
+
++ (BOOL)isAllowedNodeHost:(NSString *)host {
+    if (![host isKindOfClass:NSString.class] || ![[BTRMedia normalizeHost:host] isEqualToString:host]) return NO;
+    for (NSString *suffix in @[ @".bilivideo.com", @".bilivideo.cn", @".bilivideo.net" ])
+        if ([host hasSuffix:suffix]) return YES;
+    return [host hasPrefix:@"upos-"] && [host hasSuffix:@".akamaized.net"];
+}
+
+/// Clean, de-duplicated list or nil when any entry is not an allowed node / the size is off.
+static NSArray<NSString *> *ValidList(id raw) {
+    if (![raw isKindOfClass:NSArray.class]) return nil;
+    NSMutableArray<NSString *> *out = [NSMutableArray array];
+    for (id h in raw) {
+        if (![BTRNodeList isAllowedNodeHost:h]) return nil;
+        if (![out containsObject:h]) [out addObject:h];
+    }
+    return (out.count >= 1 && out.count <= kMaxNodesPerList) ? out : nil;
+}
+
++ (NSDictionary<NSString *, NSArray<NSString *> *> *)parseUpstreamSource:(NSString *)text error:(NSString **)error {
+    NSString *(^fail)(NSString *) = ^NSString *(NSString *why) { if (error) *error = why; return nil; };
+    if (![text isKindOfClass:NSString.class] || !text.length) return (id)fail(@"内容为空");
+    if (text.length > kMaxSourceBytes) return (id)fail(@"内容过大");
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    NSRegularExpression *quoted = [NSRegularExpression regularExpressionWithPattern:@"\"([^\"\\n]*)\"|'([^'\\n]*)'" options:0 error:nil];
+    for (NSArray *pair in @[ @[ @"MAINLAND_HOSTS", @"mainland" ], @[ @"OVERSEAS_HOSTS", @"overseas" ] ]) {
+        NSString *pattern = [NSString stringWithFormat:@"\\b%@\\s*=\\s*(?:Object\\.freeze\\(\\s*)?\\[([^\\]]*)\\]", pair[0]];
+        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
+        NSTextCheckingResult *m = [re firstMatchInString:text options:0 range:NSMakeRange(0, text.length)];
+        if (!m) return (id)fail([NSString stringWithFormat:@"没找到 %@，原项目文件格式可能变了", pair[0]]);
+        NSString *body = [text substringWithRange:[m rangeAtIndex:1]];
+        NSMutableArray *hosts = [NSMutableArray array];
+        for (NSTextCheckingResult *q in [quoted matchesInString:body options:0 range:NSMakeRange(0, body.length)]) {
+            NSRange r = [q rangeAtIndex:1].location != NSNotFound ? [q rangeAtIndex:1] : [q rangeAtIndex:2];
+            [hosts addObject:[body substringWithRange:r]];
+        }
+        for (NSString *h in hosts)
+            if (![self isAllowedNodeHost:h]) return (id)fail([NSString stringWithFormat:@"%@ 里有不是 B 站节点的主机：%@", pair[0], h]);
+        NSArray *list = ValidList(hosts);
+        if (!list) return (id)fail([NSString stringWithFormat:@"%@ 为空或超过 %lu 个", pair[0], (unsigned long)kMaxNodesPerList]);
+        out[pair[1]] = list;
+    }
+    return out;
+}
+
+- (instancetype)initWithDefaults:(NSUserDefaults *)defaults {
+    if ((self = [super init])) {
+        _d = defaults;
+        [self load];
+    }
+    return self;
+}
+
+- (void)load {
+    NSDictionary *saved = [_d objectForKey:kNodesKey];
+    NSArray *m = nil, *o = nil;
+    if ([saved isKindOfClass:NSDictionary.class]) {
+        m = ValidList(saved[@"mainland"]);
+        o = ValidList(saved[@"overseas"]);
+        if (!m || !o) BTRLog(@"保存的节点列表无效，改用内置列表");
+    }
+    @synchronized (self) {
+        if (m && o) {
+            _mainland = m;
+            _overseas = o;
+            _updatedAt = [saved[@"updatedAt"] isKindOfClass:NSDate.class] ? saved[@"updatedAt"] : nil;
+            _source = [saved[@"source"] isKindOfClass:NSString.class] ? saved[@"source"] : nil;
+        } else {
+            _mainland = BTRNodeList.builtinMainland;
+            _overseas = BTRNodeList.builtinOverseas;
+            _updatedAt = nil;
+            _source = nil;
+        }
+    }
+}
+
+- (NSArray<NSString *> *)mainland { @synchronized (self) { return _mainland; } }
+- (NSArray<NSString *> *)overseas { @synchronized (self) { return _overseas; } }
+- (NSDate *)updatedAt { @synchronized (self) { return _updatedAt; } }
+- (NSString *)sourceHost { @synchronized (self) { return _source; } }
+- (BOOL)isBuiltin { @synchronized (self) { return _updatedAt == nil; } }
+
+static NSInteger Missing(NSArray *from, NSArray *in) {
+    NSInteger n = 0;
+    for (id x in from) if (![in containsObject:x]) n++;
+    return n;
+}
+
+- (BTRNodeUpdateResult *)applyMainland:(NSArray<NSString *> *)mainland overseas:(NSArray<NSString *> *)overseas source:(NSString *)sourceHost {
+    BTRNodeUpdateResult *r = [BTRNodeUpdateResult new];
+    NSArray *m = ValidList(mainland), *o = ValidList(overseas);
+    if (!m || !o) {
+        r.message = @"节点列表无效，未修改当前列表。";
+        return r;
+    }
+    NSArray *oldM = self.mainland, *oldO = self.overseas;
+    NSDate *now = NSDate.date;
+    [_d setObject:@{ @"mainland": m, @"overseas": o, @"updatedAt": now, @"source": sourceHost ?: @"" } forKey:kNodesKey];
+    @synchronized (self) {
+        _mainland = m;
+        _overseas = o;
+        _updatedAt = now;
+        _source = sourceHost;
+    }
+    r.ok = YES;
+    r.added = Missing(m, oldM) + Missing(o, oldO);
+    r.removed = Missing(oldM, m) + Missing(oldO, o);
+    r.message = [NSString stringWithFormat:@"%@：大陆 %lu 个、海外 %lu 个，新增 %ld、移除 %ld。%@",
+                 r.added || r.removed ? @"已更新" : @"已是最新", (unsigned long)m.count, (unsigned long)o.count,
+                 (long)r.added, (long)r.removed, sourceHost.length ? [@"来源：" stringByAppendingString:sourceHost] : @""];
+    BTRLog(@"节点列表%@", r.message);
+    return r;
+}
+
+- (void)restoreBuiltin {
+    [_d removeObjectForKey:kNodesKey];
+    [self load];
+    BTRLog(@"已恢复内置节点列表");
+}
+
+- (void)updateFromURLs:(NSArray<NSURL *> *)urls completion:(void (^)(BTRNodeUpdateResult *))completion {
+    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    cfg.timeoutIntervalForRequest = 10;
+    cfg.timeoutIntervalForResource = 20;
+    cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    [self tryURLs:urls index:0 session:session errors:[NSMutableArray array] completion:^(BTRNodeUpdateResult *r) {
+        [session finishTasksAndInvalidate];
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(r); });
+    }];
+}
+
+- (void)tryURLs:(NSArray<NSURL *> *)urls index:(NSUInteger)i session:(NSURLSession *)session errors:(NSMutableArray<NSString *> *)errors
+     completion:(void (^)(BTRNodeUpdateResult *))completion {
+    if (i >= urls.count) {
+        BTRNodeUpdateResult *r = [BTRNodeUpdateResult new];
+        r.message = [NSString stringWithFormat:@"更新失败，继续使用当前列表。\n%@", [errors componentsJoinedByString:@"\n"]];
+        BTRLog(@"节点列表更新失败：%@", [errors componentsJoinedByString:@"；"]);
+        completion(r);
+        return;
+    }
+    NSURL *url = urls[i];
+    NSString *label = url.host.length ? url.host : url.lastPathComponent;
+    [[session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        NSString *why = nil;
+        NSDictionary *lists = nil;
+        BOOL fileOK = NO;
+#ifdef BTR_TESTING
+        fileOK = url.isFileURL; // host tests read fixtures from disk
+#endif
+        NSInteger status = [resp isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)resp).statusCode : 0;
+        if (err) why = err.localizedDescription;
+        else if (!fileOK && status != 200) why = [NSString stringWithFormat:@"HTTP %ld", (long)status];
+        else if (data.length > kMaxSourceBytes) why = @"内容过大";
+        else {
+            NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            NSString *parseError = nil;
+            lists = [BTRNodeList parseUpstreamSource:text error:&parseError];
+            if (!lists) why = parseError ?: @"无法解析";
+        }
+        if (lists) {
+            completion([self applyMainland:lists[@"mainland"] overseas:lists[@"overseas"] source:label]);
+        } else {
+            [errors addObject:[NSString stringWithFormat:@"%@：%@", label, why]];
+            [self tryURLs:urls index:i + 1 session:session errors:errors completion:completion];
+        }
+    }] resume];
+}
+
+- (void)updateWithCompletion:(void (^)(BTRNodeUpdateResult *))completion {
+    [self updateFromURLs:BTRNodeList.sourceURLs completion:completion];
+}
+
+- (NSString *)summary {
+    NSArray *m = self.mainland, *o = self.overseas;
+    NSDate *at = self.updatedAt;
+    NSString *counts = [NSString stringWithFormat:@"大陆 %lu / 海外 %lu", (unsigned long)m.count, (unsigned long)o.count];
+    if (!at) return [@"内置 · " stringByAppendingString:counts];
+    NSDateFormatter *fmt = [NSDateFormatter new];
+    fmt.dateFormat = @"MM-dd HH:mm";
+    return [NSString stringWithFormat:@"%@ 更新 · %@", [fmt stringFromDate:at], counts];
 }
 
 @end

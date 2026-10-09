@@ -178,6 +178,89 @@ static void TestCandidates(void) {
     CHECK([[BTRMedia normalizeHost:@" HTTPS://Upos-SZ-mirrorcos.bilivideo.com/path "] isEqualToString:@"upos-sz-mirrorcos.bilivideo.com"], @"normalize host");
 }
 
+static BTRNodeUpdateResult *WaitUpdate(BTRNodeList *list, NSArray<NSURL *> *urls) {
+    __block BTRNodeUpdateResult *result = nil;
+    [list updateFromURLs:urls completion:^(BTRNodeUpdateResult *r) { result = r; }];
+    NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:60];
+    while (!result && [limit timeIntervalSinceNow] > 0) [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    return result;
+}
+
+static void TestNodeList(void) {
+    NSString *fixturePath = @"tests/fixtures/upstream-cdn-resolver.js"; // upstream src/cdn-resolver.js
+    NSString *upstream = [NSString stringWithContentsOfFile:fixturePath encoding:NSUTF8StringEncoding error:nil];
+    CHECK(upstream.length > 0, @"fixture present");
+
+    // Parsing the real upstream file gives exactly the built-in lists.
+    NSString *err = nil;
+    NSDictionary *lists = [BTRNodeList parseUpstreamSource:upstream error:&err];
+    CHECK([lists[@"mainland"] isEqualToArray:BTRNodeList.builtinMainland], @"upstream mainland parsed: %@ (%@)", lists[@"mainland"], err);
+    CHECK([lists[@"overseas"] isEqualToArray:BTRNodeList.builtinOverseas], @"upstream overseas parsed: %@", lists[@"overseas"]);
+
+    // Host rules: only Bilibili's own node names.
+    CHECK([BTRNodeList isAllowedNodeHost:@"upos-sz-mirrorali.bilivideo.com"] && [BTRNodeList isAllowedNodeHost:@"cn-hk-eq-01-01.bilivideo.com"], @"bilivideo allowed");
+    CHECK([BTRNodeList isAllowedNodeHost:@"upos-hz-mirrorakam.akamaized.net"] && [BTRNodeList isAllowedNodeHost:@"x.bilivideo.cn"], @"upos akamai / bilivideo.cn allowed");
+    for (NSString *bad in @[ @"evil.com", @"someone.akamaized.net", @"upos-sz.bilivideo.com.evil.com", @"bilivideo.com", @"UPOS-SZ-MIRRORALI.BILIVIDEO.COM",
+                             @"x.hdslb.com", @"https://upos-sz-mirrorali.bilivideo.com", @"a_b.bilivideo.com", @"" ])
+        CHECK(![BTRNodeList isAllowedNodeHost:bad], @"rejected host %@", bad);
+
+    // Any foreign host rejects the whole file; missing / empty lists too.
+    NSString *tampered = [upstream stringByReplacingOccurrencesOfString:@"\"upos-sz-mirrorhw.bilivideo.com\"" withString:@"\"upos-sz-mirrorhw.evil.com\""];
+    CHECK([BTRNodeList parseUpstreamSource:tampered error:&err] == nil && [err containsString:@"evil.com"], @"tampered rejected: %@", err);
+    CHECK([BTRNodeList parseUpstreamSource:@"const MAINLAND_HOSTS = Object.freeze([\"a.bilivideo.com\"]);" error:&err] == nil, @"missing overseas rejected");
+    CHECK([BTRNodeList parseUpstreamSource:@"const MAINLAND_HOSTS = Object.freeze([]); const OVERSEAS_HOSTS = Object.freeze([\"a.bilivideo.com\"]);" error:&err] == nil, @"empty list rejected");
+    NSDictionary *single = [BTRNodeList parseUpstreamSource:@"const MAINLAND_HOSTS = Object.freeze([\n  // comment\n  'a.bilivideo.com', \"a.bilivideo.com\",\n]);\nconst OVERSEAS_HOSTS = Object.freeze([\"upos-x.akamaized.net\"]);" error:&err];
+    CHECK([single[@"mainland"] isEqualToArray:@[ @"a.bilivideo.com" ]] && [single[@"overseas"] isEqualToArray:@[ @"upos-x.akamaized.net" ]], @"comments / quotes / duplicates: %@", single);
+    CHECK([BTRNodeList parseUpstreamSource:@"" error:&err] == nil, @"empty text rejected");
+
+    // Persist, reload, diff, corrupt store, restore — on a private defaults suite.
+    NSString *suite = @"BTRTests.nodes";
+    [[NSUserDefaults new] removePersistentDomainForName:suite];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    BTRNodeList *list = [[BTRNodeList alloc] initWithDefaults:d];
+    CHECK(list.isBuiltin && [list.mainland isEqualToArray:BTRNodeList.builtinMainland] && [list.summary hasPrefix:@"内置"], @"fresh list is built-in: %@", list.summary);
+    NSArray *newMainland = @[ @"upos-sz-mirrorali.bilivideo.com", @"upos-sz-mirrornew.bilivideo.com" ];
+    BTRNodeUpdateResult *r = [list applyMainland:newMainland overseas:BTRNodeList.builtinOverseas source:@"raw.githubusercontent.com"];
+    CHECK(r.ok && r.added == 1 && r.removed == 7, @"diff added %ld removed %ld", (long)r.added, (long)r.removed);
+    CHECK(!list.isBuiltin && [list.mainland isEqualToArray:newMainland] && [list.sourceHost isEqualToString:@"raw.githubusercontent.com"], @"applied in memory");
+    BTRNodeList *reloaded = [[BTRNodeList alloc] initWithDefaults:d];
+    CHECK([reloaded.mainland isEqualToArray:newMainland] && reloaded.updatedAt != nil, @"persisted: %@", reloaded.mainland);
+    r = [list applyMainland:@[ @"evil.com" ] overseas:BTRNodeList.builtinOverseas source:nil];
+    CHECK(!r.ok && [list.mainland isEqualToArray:newMainland], @"invalid apply keeps current list");
+    [d setObject:@{ @"mainland": @[ @"evil.com" ], @"overseas": @[ @1 ] } forKey:@"BTRiOS.nodes"];
+    CHECK([[[BTRNodeList alloc] initWithDefaults:d].mainland isEqualToArray:BTRNodeList.builtinMainland], @"corrupt store falls back to built-in");
+    [d setObject:@"garbage" forKey:@"BTRiOS.nodes"];
+    CHECK([[BTRNodeList alloc] initWithDefaults:d].isBuiltin, @"garbage store falls back to built-in");
+    [list restoreBuiltin];
+    CHECK(list.isBuiltin && [list.mainland isEqualToArray:BTRNodeList.builtinMainland] && ![d objectForKey:@"BTRiOS.nodes"], @"restore built-in");
+
+    // Network: refused (HTTP 404) and unparsable (a media file) sources fall through to the next one.
+    NSURL *fixtureURL = [NSURL fileURLWithPath:[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:fixturePath]];
+    NSArray *urls = @[ [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%u/a.js", gBad]],
+                       [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%u/x.m4s", gOK]],
+                       fixtureURL ];
+    [list applyMainland:newMainland overseas:@[ @"cn-hk-eq-01-01.bilivideo.com" ] source:@"old"];
+    r = WaitUpdate(list, urls);
+    CHECK(r.ok && [list.mainland isEqualToArray:BTRNodeList.builtinMainland] && [list.overseas isEqualToArray:BTRNodeList.builtinOverseas], @"update via fallback: %@", r.message);
+    CHECK(r.added == 7 + 3 && r.removed == 1, @"update diff %ld/%ld", (long)r.added, (long)r.removed);
+    CHECK([list.sourceHost isEqualToString:@"upstream-cdn-resolver.js"], @"source label %@", list.sourceHost);
+    r = WaitUpdate(list, @[ fixtureURL ]);
+    CHECK(r.ok && r.added == 0 && r.removed == 0 && [r.message hasPrefix:@"已是最新"], @"unchanged update: %@", r.message);
+    r = WaitUpdate(list, @[ urls[0], urls[1] ]);
+    CHECK(r && !r.ok && [r.message containsString:@"HTTP 404"] && [r.message componentsSeparatedByString:@"127.0.0.1："].count == 3 && [list.mainland isEqualToArray:BTRNodeList.builtinMainland], @"all sources fail keeps list: %@", r.message);
+    CHECK([BTRNodeList.sourceURLs.firstObject.absoluteString hasPrefix:@"https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/"], @"primary source");
+    for (NSURL *u in BTRNodeList.sourceURLs) CHECK([u.scheme isEqualToString:@"https"], @"https source %@", u);
+    [[NSUserDefaults new] removePersistentDomainForName:suite];
+
+    // The shared list drives candidate generation immediately.
+    NSString *cos = @"https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/11/22/333-1-100026.m4s?e=1&deadline=2&upsig=s";
+    [BTRNodeList.shared applyMainland:@[ @"upos-sz-mirrornew.bilivideo.com" ] overseas:BTRNodeList.builtinOverseas source:@"test"];
+    NSArray *c = [BTRMedia candidatesForPrimary:cos backups:@[] mode:BTRCDNModeMainland custom:@[]];
+    CHECK(c.count == 1 && [c.firstObject hasPrefix:@"https://upos-sz-mirrornew.bilivideo.com/"], @"updated list applies at once: %@", c);
+    [BTRNodeList.shared restoreBuiltin];
+    CHECK([BTRMedia candidatesForPrimary:cos backups:@[] mode:BTRCDNModeMainland custom:@[]].count == 8, @"built-in list back");
+}
+
 static BTRURLMapper TestMapper(void) {
     return ^NSString *(NSString *primary, NSArray<NSString *> *backups) {
         if ([BTRMedia isAudioURL:primary]) return nil;
@@ -499,7 +582,9 @@ int main(int argc, const char *argv[]) {
         gOK = (uint16_t)atoi(argv[1]);
         gSlow = (uint16_t)atoi(argv[2]);
         gBad = (uint16_t)atoi(argv[3]);
+        [BTRNodeList.shared restoreBuiltin];
         TestCandidates();
+        TestNodeList();
         TestJSON();
         TestProtobuf();
         TestProxy();
