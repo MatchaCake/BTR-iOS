@@ -414,7 +414,11 @@ static NSString *const kSignedListKeyB64 = @"BI8Hu7gO0/M8LWSbdL9Bpyl/k+9MYijJsHJ
               [NSURL URLWithString:@"https://cdn.jsdelivr.net/gh/MrTangLuyao/Bilibili-thread-ripper@main/src/cdn-resolver.js"] ];
 }
 
-+ (NSURL *)signedListURL { return [NSURL URLWithString:@"https://static.matchacake.net/c/n1.json"]; }
++ (NSArray<NSURL *> *)signedListURLs {
+    // Same signed object on two hostnames: primary, then mirror (tried before upstream).
+    return @[ [NSURL URLWithString:@"https://btr-cdn-list.matchacake0v0.com/c/n1.json"],
+              [NSURL URLWithString:@"https://static.matchacake.net/c/n1.json"] ];
+}
 
 + (BOOL)isAllowedNodeHost:(NSString *)host {
     if (![host isKindOfClass:NSString.class] || !host.length || host.length > 253) return NO;
@@ -637,10 +641,10 @@ static NSInteger Missing(NSArray *from, NSArray *in) {
 }
 
 - (void)updateFromURLs:(NSArray<NSURL *> *)urls completion:(void (^)(BTRNodeUpdateResult *))completion {
-    [self updateFromSignedURL:nil upstreamURLs:urls completion:completion];
+    [self updateFromSignedURLs:@[] upstreamURLs:urls completion:completion];
 }
 
-- (void)updateFromSignedURL:(NSURL *)signedURL upstreamURLs:(NSArray<NSURL *> *)urls completion:(void (^)(BTRNodeUpdateResult *))completion {
+- (void)updateFromSignedURLs:(NSArray<NSURL *> *)signedURLs upstreamURLs:(NSArray<NSURL *> *)urls completion:(void (^)(BTRNodeUpdateResult *))completion {
     NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
     cfg.timeoutIntervalForRequest = 10;
     cfg.timeoutIntervalForResource = 20;
@@ -648,7 +652,7 @@ static NSInteger Missing(NSArray *from, NSArray *in) {
     cfg.HTTPShouldSetCookies = NO;
     NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
     NSMutableArray<NSArray *> *sources = [NSMutableArray array];
-    if (signedURL) [sources addObject:@[ signedURL, @YES ]];
+    for (NSURL *u in signedURLs) [sources addObject:@[ u, @YES ]];
     for (NSURL *u in urls) [sources addObject:@[ u, @NO ]];
     [self trySources:sources index:0 session:session errors:[NSMutableArray array] completion:^(BTRNodeUpdateResult *r) {
         [session finishTasksAndInvalidate];
@@ -703,14 +707,14 @@ static NSInteger Missing(NSArray *from, NSArray *in) {
 }
 
 - (void)updateWithCompletion:(void (^)(BTRNodeUpdateResult *))completion {
-    [self updateFromSignedURL:BTRNodeList.signedListURL upstreamURLs:BTRNodeList.sourceURLs completion:completion];
+    [self updateFromSignedURLs:BTRNodeList.signedListURLs upstreamURLs:BTRNodeList.sourceURLs completion:completion];
 }
 
 - (void)refreshSignedIfStale {
     NSDate *last = [_d objectForKey:kLastAutoRefreshKey];
     if ([last isKindOfClass:NSDate.class] && -[last timeIntervalSinceNow] < 24 * 3600) return;
     [_d setObject:NSDate.date forKey:kLastAutoRefreshKey];
-    [self updateFromSignedURL:BTRNodeList.signedListURL upstreamURLs:@[] completion:^(BTRNodeUpdateResult *r) {}];
+    [self updateFromSignedURLs:BTRNodeList.signedListURLs upstreamURLs:@[] completion:^(BTRNodeUpdateResult *r) {}];
 }
 
 - (NSString *)summary {

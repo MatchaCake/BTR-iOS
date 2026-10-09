@@ -365,12 +365,17 @@ static void TestSignedNodeList(void) {
     NSURL *v3 = file(@"btr-signed-v3.json", Envelope(SignedPayload(3, @"2099-01-01T00:00:00Z", HK.count ? @[ @"upos-sz-mirrorcos.bilivideo.com" ] : M, O, HK, AK), key));
     NSURL *fixture = [NSURL fileURLWithPath:[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"tests/fixtures/upstream-cdn-resolver.js"]];
     __block BTRNodeUpdateResult *res = nil;
-    void (^run)(NSURL *, NSArray *) = ^(NSURL *signedURL, NSArray *ups) {
+    void (^runAll)(NSArray *, NSArray *) = ^(NSArray *signedURLs, NSArray *ups) {
         res = nil;
-        [list updateFromSignedURL:signedURL upstreamURLs:ups completion:^(BTRNodeUpdateResult *r) { res = r; }];
+        [list updateFromSignedURLs:signedURLs upstreamURLs:ups completion:^(BTRNodeUpdateResult *r) { res = r; }];
         NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:30];
         while (!res && [limit timeIntervalSinceNow] > 0) [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
     };
+    void (^run)(NSURL *, NSArray *) = ^(NSURL *signedURL, NSArray *ups) { runAll(@[ signedURL ], ups); };
+    CHECK(BTRNodeList.signedListURLs.count == 2
+          && [BTRNodeList.signedListURLs[0].absoluteString isEqualToString:@"https://btr-cdn-list.matchacake0v0.com/c/n1.json"]
+          && [BTRNodeList.signedListURLs[1].absoluteString isEqualToString:@"https://static.matchacake.net/c/n1.json"],
+          @"signed list URLs: primary then mirror");
     run(v5, @[ fixture ]);
     CHECK(res.ok && list.version == 5 && list.maxSignedVersion == 5 && [list.mainland isEqualToArray:M] && [list.overseas isEqualToArray:expectO]
           && [list.sourceHost containsString:@"签名列表 v5"], @"signed first: %@ / %@", res.message, list.sourceHost);
@@ -382,6 +387,12 @@ static void TestSignedNodeList(void) {
     CHECK(list.isBuiltin && list.maxSignedVersion == 5, @"max signed version survives restore");
     run(v3, @[]);
     CHECK(!res.ok && list.isBuiltin, @"signed-only failure keeps current list: %@", res.message);
+    // An unreachable / unusable primary falls through to the signed mirror before upstream.
+    NSURL *v6 = file(@"btr-signed-v6.json", Envelope(SignedPayload(6, @"2099-01-01T00:00:00Z", M, O, HK, AK), key));
+    NSURL *challenge = file(@"btr-signed-challenge.html", [@"<html>challenge</html>" dataUsingEncoding:NSUTF8StringEncoding]);
+    runAll(@[ challenge, v6 ], @[ fixture ]);
+    CHECK(res.ok && list.version == 6 && [list.sourceHost containsString:@"签名列表 v6"] && [res.message containsString:@"不是签名列表"],
+          @"signed mirror before upstream: %@ / %@", res.message, list.sourceHost);
     [[NSUserDefaults new] removePersistentDomainForName:suite];
     [[NSUserDefaults new] removePersistentDomainForName:@"BTRTests.signed0"];
     CFRelease(key);

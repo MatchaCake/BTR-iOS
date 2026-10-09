@@ -5,7 +5,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-#define BTR_VERSION @"0.1.3"
+#define BTR_VERSION @"0.1.4"
 
 typedef NS_ENUM(NSInteger, BTRCDNMode) {
     BTRCDNModeMainland = 0, // 大陆 CDN（BTR 默认）
@@ -76,8 +76,8 @@ FOUNDATION_EXPORT void BTRLogClear(void);
 @property (class, readonly) NSArray<NSString *> *builtinOverseas;
 /// Upstream file on raw.githubusercontent.com first, then jsDelivr mirrors.
 @property (class, readonly) NSArray<NSURL *> *sourceURLs;
-/// Our signed list.
-@property (class, readonly) NSURL *signedListURL;
+/// Our signed list: primary URL, then a mirror serving the same signed object.
+@property (class, readonly) NSArray<NSURL *> *signedListURLs;
 /// X9.63 public key (65 bytes) the signed list must verify against; the embedded one by default.
 @property (copy) NSData *signedListKey;
 @property (readonly) NSArray<NSString *> *mainland;
@@ -107,8 +107,8 @@ FOUNDATION_EXPORT void BTRLogClear(void);
 - (void)restoreBuiltin;
 /// Tries upstream `urls` in order; completion runs on the main queue.
 - (void)updateFromURLs:(NSArray<NSURL *> *)urls completion:(void (^)(BTRNodeUpdateResult *result))completion;
-/// Tries the signed list (if any), then upstream `urls` in order; completion runs on the main queue.
-- (void)updateFromSignedURL:(nullable NSURL *)signedURL upstreamURLs:(NSArray<NSURL *> *)urls
+/// Tries the signed list URLs in order, then upstream `urls` in order; completion runs on the main queue.
+- (void)updateFromSignedURLs:(NSArray<NSURL *> *)signedURLs upstreamURLs:(NSArray<NSURL *> *)urls
                  completion:(void (^)(BTRNodeUpdateResult *result))completion;
 /// "更新节点列表": signed list, then upstream.
 - (void)updateWithCompletion:(void (^)(BTRNodeUpdateResult *result))completion;
