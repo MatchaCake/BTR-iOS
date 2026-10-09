@@ -88,7 +88,7 @@ jobs:
             echo
             echo "---"
             echo
-            echo "- 版本：${VERSION}（面板“更多 → 原项目”显示 \`v${VERSION}\`）"
+            echo "- 版本：${VERSION}（面板“更多 → BTR-iOS”显示 \`v${VERSION}\`）"
             echo "- 提交：${SHA}"
             echo "- 构建：${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}"
             echo "- 文件：\`BTR-iOS.dylib\`（arm64，iphoneos，ad-hoc 签名），${size} 字节"

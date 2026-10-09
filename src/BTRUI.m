@@ -150,7 +150,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
         case BTRSectionStatus: return 6;
         case BTRSectionDiag: return 3;
         case BTRSectionNodes: return MAX(1, (NSInteger)MIN(_nodes.count, 12));
-        default: return 3;
+        default: return 4;
     }
 }
 
@@ -158,6 +158,14 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
     UITableViewCell *c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
     c.textLabel.text = title;
     c.detailTextLabel.text = detail;
+    return c;
+}
+
+- (UITableViewCell *)subtitleCell:(NSString *)title detail:(NSString *)detail {
+    UITableViewCell *c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+    c.textLabel.text = title;
+    c.detailTextLabel.text = detail;
+    c.detailTextLabel.textColor = UIColor.secondaryLabelColor;
     return c;
 }
 
@@ -233,7 +241,13 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
             UITableViewCell *c;
             if (ip.row == 0) c = [self cell:@"查看 / 分享日志" detail:nil];
             else if (ip.row == 1) c = [self cell:@"清零统计" detail:nil];
-            else c = [self cell:@"原项目" detail:[@"v" stringByAppendingString:BTR_VERSION]];
+            else if (ip.row == 2) {
+                // This tweak's own version (BTR_VERSION in BTRCore.h) and repo.
+                c = [self subtitleCell:@"BTR-iOS" detail:[NSString stringWithFormat:@"v%@ · 作者 MatchaCake", BTR_VERSION]];
+            } else {
+                // Upstream project link. No version here: upstream releases independently.
+                c = [self subtitleCell:@"原项目" detail:@"MrTangLuyao/Bilibili-thread-ripper"];
+            }
             c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             return c;
         }
@@ -338,7 +352,10 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
     } else if (ip.section == BTRSectionMore) {
         if (ip.row == 0) [self.navigationController pushViewController:[BTRLogViewController new] animated:YES];
         else if (ip.row == 1) { [BTRStats.shared reset]; [BTRDiag reset]; [tableView reloadData]; }
-        else [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/MrTangLuyao/Bilibili-thread-ripper"] options:@{} completionHandler:nil];
+        else {
+            NSString *url = ip.row == 2 ? @"https://github.com/MatchaCake/BTR-iOS" : @"https://github.com/MrTangLuyao/Bilibili-thread-ripper";
+            [UIApplication.sharedApplication openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
+        }
     }
 }
 
