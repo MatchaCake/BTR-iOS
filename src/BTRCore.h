@@ -5,7 +5,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-#define BTR_VERSION @"0.1.4"
+#define BTR_VERSION @"0.1.5"
 
 typedef NS_ENUM(NSInteger, BTRCDNMode) {
     BTRCDNModeMainland = 0, // 大陆 CDN（BTR 默认）
