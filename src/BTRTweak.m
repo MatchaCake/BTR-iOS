@@ -25,5 +25,9 @@ __attribute__((constructor)) static void BTRInit(void) {
         [BTRProxyServer.shared start];
         BTRInstallHooks();
         BTRInstallUI();
+        // Daily background refresh of the signed node list, once the app is up.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            [BTRNodeList.shared refreshSignedIfStale];
+        });
     }
 }

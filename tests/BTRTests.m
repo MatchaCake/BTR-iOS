@@ -2,6 +2,7 @@
 // JSON / protobuf / gRPC rewriter, the NSURLSession hooks and the multi-connection proxy.
 // Run with tests/run.sh.
 #import <CommonCrypto/CommonDigest.h>
+#import <Security/Security.h>
 #import <Foundation/Foundation.h>
 #import "../src/BTRCore.h"
 #import "../src/BTRHooks.h"
@@ -161,14 +162,14 @@ static void TestCandidates(void) {
     NSString *mcdn = @"https://xy1x2x3x4xy.mcdn.bilivideo.cn:4483/upgcxcode/11/22/333-1-100026.m4s?e=1&deadline=2&upsig=s";
     NSString *cos = @"https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/11/22/333-1-100026.m4s?e=1&deadline=2&upsig=s";
     NSArray *c = [BTRMedia candidatesForPrimary:mcdn backups:@[ cos ] mode:BTRCDNModeMainland custom:@[]];
-    CHECK(c.count == 8, @"mainland candidates = %lu", (unsigned long)c.count);
+    CHECK(c.count == BTRNodeList.builtinMainland.count && c.count == 22, @"mainland candidates = %lu", (unsigned long)c.count);
     CHECK([c.firstObject isEqualToString:cos], @"mainland original first: %@", c.firstObject);
-    for (NSString *u in c) CHECK([u rangeOfString:@":4483"].location == NSNotFound && [u hasPrefix:@"https://upos-sz-"], @"bad candidate %@", u);
+    for (NSString *u in c) CHECK([u rangeOfString:@":4483"].location == NSNotFound && [u hasPrefix:@"https://upos-"], @"bad candidate %@", u);
     CHECK([c containsObject:[cos stringByReplacingOccurrencesOfString:@"mirrorcos" withString:@"mirrorali"]], @"swap keeps path and query");
 
     NSString *aka = @"https://upos-hz-mirrorakam.akamaized.net/upgcxcode/11/22/333-1-100026.m4s?hdnts=x";
     NSArray *o = [BTRMedia candidatesForPrimary:aka backups:@[] mode:BTRCDNModeOverseas custom:@[]];
-    CHECK(o.count == 5 && [o.firstObject isEqualToString:aka], @"overseas akamai-only: %@", o);
+    CHECK(o.count == 1 + BTRNodeList.builtinOverseas.count && [o.firstObject isEqualToString:aka], @"overseas akamai-only: %@", o);
     NSArray *orig = [BTRMedia candidatesForPrimary:mcdn backups:@[ cos, @"https://evil.example.com/a.m4s" ] mode:BTRCDNModeOriginal custom:@[]];
     CHECK(orig.count == 2, @"original mode keeps only Bilibili originals: %@", orig);
     NSArray *custom = [BTRMedia candidatesForPrimary:mcdn backups:@[] mode:BTRCDNModeCustom custom:@[ @"upos-sz-mirrorhw.bilivideo.com", @"evil.com" ]];
@@ -191,26 +192,33 @@ static void TestNodeList(void) {
     NSString *upstream = [NSString stringWithContentsOfFile:fixturePath encoding:NSUTF8StringEncoding error:nil];
     CHECK(upstream.length > 0, @"fixture present");
 
-    // Parsing the real upstream file gives exactly the built-in lists.
+    // The built-in lists extend upstream's (same mainland order first, all overseas nodes kept).
     NSString *err = nil;
     NSDictionary *lists = [BTRNodeList parseUpstreamSource:upstream error:&err];
-    CHECK([lists[@"mainland"] isEqualToArray:BTRNodeList.builtinMainland], @"upstream mainland parsed: %@ (%@)", lists[@"mainland"], err);
-    CHECK([lists[@"overseas"] isEqualToArray:BTRNodeList.builtinOverseas], @"upstream overseas parsed: %@", lists[@"overseas"]);
+    NSArray *upM = lists[@"mainland"], *upO = lists[@"overseas"];
+    CHECK(upM.count == 8 && [[BTRNodeList.builtinMainland subarrayWithRange:NSMakeRange(0, upM.count)] isEqualToArray:upM], @"upstream mainland parsed: %@ (%@)", upM, err);
+    CHECK(upO.count == 4 && [[NSSet setWithArray:upO] isSubsetOfSet:[NSSet setWithArray:BTRNodeList.builtinOverseas]], @"upstream overseas parsed: %@", upO);
+    CHECK(BTRNodeList.builtinMainland.count == 22 && BTRNodeList.builtinOverseas.count == 15 && ![BTRNodeList.builtinOverseas containsObject:@"cn-hk-eq-01-07.bilivideo.com"], @"built-in sizes");
+    for (NSString *h in [BTRNodeList.builtinMainland arrayByAddingObjectsFromArray:BTRNodeList.builtinOverseas]) CHECK([BTRNodeList isAllowedNodeHost:h], @"built-in host %@", h);
 
     // Host rules: only Bilibili's own node names.
     CHECK([BTRNodeList isAllowedNodeHost:@"upos-sz-mirrorali.bilivideo.com"] && [BTRNodeList isAllowedNodeHost:@"cn-hk-eq-01-01.bilivideo.com"], @"bilivideo allowed");
-    CHECK([BTRNodeList isAllowedNodeHost:@"upos-hz-mirrorakam.akamaized.net"] && [BTRNodeList isAllowedNodeHost:@"x.bilivideo.cn"], @"upos akamai / bilivideo.cn allowed");
+    CHECK([BTRNodeList isAllowedNodeHost:@"upos-hz-mirrorakam.akamaized.net"] && [BTRNodeList isAllowedNodeHost:@"upos-tf-all-hw.bilivideo.com"], @"upos akamai / tf-all allowed");
     for (NSString *bad in @[ @"evil.com", @"someone.akamaized.net", @"upos-sz.bilivideo.com.evil.com", @"bilivideo.com", @"UPOS-SZ-MIRRORALI.BILIVIDEO.COM",
-                             @"x.hdslb.com", @"https://upos-sz-mirrorali.bilivideo.com", @"a_b.bilivideo.com", @"" ])
+                             @"x.hdslb.com", @"https://upos-sz-mirrorali.bilivideo.com", @"a_b.bilivideo.com", @"",
+                             // *.bilivideo.cn / mcdn names can point at third-party machines.
+                             @"x.bilivideo.cn", @"123-45-67-89.mcdn.bilivideo.cn", @"upos-sz-mirrorali.bilivideo.cn", @"upos-sz-mirrorali.bilivideo.net",
+                             @"a.bilivideo.com", @"xy1x2.mcdn.bilivideo.com", @"upos--a.bilivideo.com", @"upos-a.bilivideo.com.", @"cn-hk-eq-01-01.akamaized.net" ])
         CHECK(![BTRNodeList isAllowedNodeHost:bad], @"rejected host %@", bad);
 
     // Any foreign host rejects the whole file; missing / empty lists too.
     NSString *tampered = [upstream stringByReplacingOccurrencesOfString:@"\"upos-sz-mirrorhw.bilivideo.com\"" withString:@"\"upos-sz-mirrorhw.evil.com\""];
     CHECK([BTRNodeList parseUpstreamSource:tampered error:&err] == nil && [err containsString:@"evil.com"], @"tampered rejected: %@", err);
-    CHECK([BTRNodeList parseUpstreamSource:@"const MAINLAND_HOSTS = Object.freeze([\"a.bilivideo.com\"]);" error:&err] == nil, @"missing overseas rejected");
-    CHECK([BTRNodeList parseUpstreamSource:@"const MAINLAND_HOSTS = Object.freeze([]); const OVERSEAS_HOSTS = Object.freeze([\"a.bilivideo.com\"]);" error:&err] == nil, @"empty list rejected");
-    NSDictionary *single = [BTRNodeList parseUpstreamSource:@"const MAINLAND_HOSTS = Object.freeze([\n  // comment\n  'a.bilivideo.com', \"a.bilivideo.com\",\n]);\nconst OVERSEAS_HOSTS = Object.freeze([\"upos-x.akamaized.net\"]);" error:&err];
-    CHECK([single[@"mainland"] isEqualToArray:@[ @"a.bilivideo.com" ]] && [single[@"overseas"] isEqualToArray:@[ @"upos-x.akamaized.net" ]], @"comments / quotes / duplicates: %@", single);
+    CHECK([BTRNodeList parseUpstreamSource:@"const MAINLAND_HOSTS = Object.freeze([\"upos-a.bilivideo.com\"]);" error:&err] == nil, @"missing overseas rejected");
+    CHECK([BTRNodeList parseUpstreamSource:@"const MAINLAND_HOSTS = Object.freeze([]); const OVERSEAS_HOSTS = Object.freeze([\"upos-a.bilivideo.com\"]);" error:&err] == nil, @"empty list rejected");
+    CHECK([BTRNodeList parseUpstreamSource:@"const MAINLAND_HOSTS = [\"1-2-3-4.mcdn.bilivideo.cn\"]; const OVERSEAS_HOSTS = [\"upos-a.bilivideo.com\"];" error:&err] == nil && [err containsString:@"mcdn"], @"mcdn rejected: %@", err);
+    NSDictionary *single = [BTRNodeList parseUpstreamSource:@"const MAINLAND_HOSTS = Object.freeze([\n  // comment\n  'upos-a.bilivideo.com', \"upos-a.bilivideo.com\",\n]);\nconst OVERSEAS_HOSTS = Object.freeze([\"upos-x.akamaized.net\"]);" error:&err];
+    CHECK([single[@"mainland"] isEqualToArray:@[ @"upos-a.bilivideo.com" ]] && [single[@"overseas"] isEqualToArray:@[ @"upos-x.akamaized.net" ]], @"comments / quotes / duplicates: %@", single);
     CHECK([BTRNodeList parseUpstreamSource:@"" error:&err] == nil, @"empty text rejected");
 
     // Persist, reload, diff, corrupt store, restore — on a private defaults suite.
@@ -221,7 +229,7 @@ static void TestNodeList(void) {
     CHECK(list.isBuiltin && [list.mainland isEqualToArray:BTRNodeList.builtinMainland] && [list.summary hasPrefix:@"内置"], @"fresh list is built-in: %@", list.summary);
     NSArray *newMainland = @[ @"upos-sz-mirrorali.bilivideo.com", @"upos-sz-mirrornew.bilivideo.com" ];
     BTRNodeUpdateResult *r = [list applyMainland:newMainland overseas:BTRNodeList.builtinOverseas source:@"raw.githubusercontent.com"];
-    CHECK(r.ok && r.added == 1 && r.removed == 7, @"diff added %ld removed %ld", (long)r.added, (long)r.removed);
+    CHECK(r.ok && r.added == 1 && r.removed == 21, @"diff added %ld removed %ld", (long)r.added, (long)r.removed);
     CHECK(!list.isBuiltin && [list.mainland isEqualToArray:newMainland] && [list.sourceHost isEqualToString:@"raw.githubusercontent.com"], @"applied in memory");
     BTRNodeList *reloaded = [[BTRNodeList alloc] initWithDefaults:d];
     CHECK([reloaded.mainland isEqualToArray:newMainland] && reloaded.updatedAt != nil, @"persisted: %@", reloaded.mainland);
@@ -241,13 +249,13 @@ static void TestNodeList(void) {
                        fixtureURL ];
     [list applyMainland:newMainland overseas:@[ @"cn-hk-eq-01-01.bilivideo.com" ] source:@"old"];
     r = WaitUpdate(list, urls);
-    CHECK(r.ok && [list.mainland isEqualToArray:BTRNodeList.builtinMainland] && [list.overseas isEqualToArray:BTRNodeList.builtinOverseas], @"update via fallback: %@", r.message);
+    CHECK(r.ok && [list.mainland isEqualToArray:upM] && [list.overseas isEqualToArray:upO] && list.version == 0, @"update via fallback: %@", r.message);
     CHECK(r.added == 7 + 3 && r.removed == 1, @"update diff %ld/%ld", (long)r.added, (long)r.removed);
     CHECK([list.sourceHost isEqualToString:@"upstream-cdn-resolver.js"], @"source label %@", list.sourceHost);
     r = WaitUpdate(list, @[ fixtureURL ]);
     CHECK(r.ok && r.added == 0 && r.removed == 0 && [r.message hasPrefix:@"已是最新"], @"unchanged update: %@", r.message);
     r = WaitUpdate(list, @[ urls[0], urls[1] ]);
-    CHECK(r && !r.ok && [r.message containsString:@"HTTP 404"] && [r.message componentsSeparatedByString:@"127.0.0.1："].count == 3 && [list.mainland isEqualToArray:BTRNodeList.builtinMainland], @"all sources fail keeps list: %@", r.message);
+    CHECK(r && !r.ok && [r.message containsString:@"HTTP 404"] && [r.message componentsSeparatedByString:@"127.0.0.1："].count == 3 && [list.mainland isEqualToArray:upM], @"all sources fail keeps list: %@", r.message);
     CHECK([BTRNodeList.sourceURLs.firstObject.absoluteString hasPrefix:@"https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/"], @"primary source");
     for (NSURL *u in BTRNodeList.sourceURLs) CHECK([u.scheme isEqualToString:@"https"], @"https source %@", u);
     [[NSUserDefaults new] removePersistentDomainForName:suite];
@@ -258,7 +266,126 @@ static void TestNodeList(void) {
     NSArray *c = [BTRMedia candidatesForPrimary:cos backups:@[] mode:BTRCDNModeMainland custom:@[]];
     CHECK(c.count == 1 && [c.firstObject hasPrefix:@"https://upos-sz-mirrornew.bilivideo.com/"], @"updated list applies at once: %@", c);
     [BTRNodeList.shared restoreBuiltin];
-    CHECK([BTRMedia candidatesForPrimary:cos backups:@[] mode:BTRCDNModeMainland custom:@[]].count == 8, @"built-in list back");
+    CHECK([BTRMedia candidatesForPrimary:cos backups:@[] mode:BTRCDNModeMainland custom:@[]].count == 22, @"built-in list back");
+}
+
+#pragma mark - signed node list
+
+static NSData *JSONData(id obj) { return [NSJSONSerialization dataWithJSONObject:obj options:NSJSONWritingSortedKeys error:nil]; }
+
+static NSString *SignedPayload(int64_t version, NSString *expires, NSArray *mainland, NSArray *overseas, NSArray *hk, NSArray *akamai) {
+    NSDictionary *p = @{ @"kind": @"btr-cdn-nodes", @"version": @(version), @"updated_at": @"2026-10-09T00:00:00Z", @"expires_at": expires,
+                         @"groups": @{ @"mainland": mainland, @"overseas": overseas, @"hk": hk, @"akamai": akamai } };
+    return [[NSString alloc] initWithData:JSONData(p) encoding:NSUTF8StringEncoding];
+}
+
+static NSData *Envelope(NSString *payload, SecKeyRef priv) {
+    CFErrorRef err = NULL;
+    NSData *sig = CFBridgingRelease(SecKeyCreateSignature(priv, kSecKeyAlgorithmECDSASignatureMessageX962SHA256,
+                                                          (__bridge CFDataRef)[payload dataUsingEncoding:NSUTF8StringEncoding], &err));
+    return JSONData(@{ @"format": @"btr-cdn-list/1", @"alg": @"ES256", @"key_id": @"ktest", @"payload": payload,
+                       @"signature": [sig base64EncodedStringWithOptions:0] ?: @"" });
+}
+
+static SecKeyRef NewKey(void) {
+    return SecKeyCreateRandomKey((__bridge CFDictionaryRef)@{ (__bridge id)kSecAttrKeyType: (__bridge id)kSecAttrKeyTypeECSECPrimeRandom,
+                                                              (__bridge id)kSecAttrKeySizeInBits: @256 }, NULL);
+}
+
+static NSData *PublicX963(SecKeyRef priv) {
+    SecKeyRef pub = SecKeyCopyPublicKey(priv);
+    NSData *d = CFBridgingRelease(SecKeyCopyExternalRepresentation(pub, NULL));
+    CFRelease(pub);
+    return d;
+}
+
+static NSString *SignedError(NSData *data, NSDate *now, int64_t min, NSData *key) {
+    NSString *err = nil;
+    NSDictionary *r = [BTRNodeList parseSignedList:data now:now minVersion:min key:key error:&err];
+    return r ? nil : (err ?: @"?");
+}
+
+static void TestSignedNodeList(void) {
+    NSISO8601DateFormatter *iso = [NSISO8601DateFormatter new];
+    NSDate *t0 = [iso dateFromString:@"2026-10-09T00:00:00Z"];
+    NSArray *M = @[ @"upos-sz-mirrorali.bilivideo.com", @"upos-sz-mirrorhwb.bilivideo.com" ];
+    NSArray *O = @[ @"upos-sz-mirrorcosov.bilivideo.com" ];
+    NSArray *HK = @[ @"cn-hk-eq-01-01.bilivideo.com", @"cn-hk-eq-01-02.bilivideo.com" ];
+    NSArray *AK = @[ @"upos-hz-mirrorakam.akamaized.net" ];
+
+    // The list published by btr-cdn-list (Node crypto, DER) verifies with the embedded key.
+    NSData *published = [NSData dataWithContentsOfFile:@"tests/fixtures/signed-node-list.json"];
+    BTRNodeList *probe = [[BTRNodeList alloc] initWithDefaults:[[NSUserDefaults alloc] initWithSuiteName:@"BTRTests.signed0"]];
+    NSString *err = nil;
+    NSDictionary *pub = [BTRNodeList parseSignedList:published now:t0 minVersion:0 key:probe.signedListKey error:&err];
+    CHECK(pub && [pub[@"mainland"] count] >= 6 && [pub[@"overseas"] containsObject:@"cn-hk-eq-01-01.bilivideo.com"] && [pub[@"version"] longLongValue] > 0,
+          @"production list verifies: %@ %@", err, pub);
+    CHECK([SignedError(published, pub[@"expiresAt"], 0, probe.signedListKey) containsString:@"过期"], @"production list expires");
+
+    SecKeyRef key = NewKey(), other = NewKey();
+    NSData *x963 = PublicX963(key);
+    CHECK(x963.length == 65, @"test key");
+    CHECK([SignedError(published, t0, 0, x963) containsString:@"签名无效"], @"other key rejects production list");
+
+    NSData *good = Envelope(SignedPayload(100, @"2026-10-23T00:00:00Z", M, O, HK, AK), key);
+    NSDictionary *l = [BTRNodeList parseSignedList:good now:t0 minVersion:100 key:x963 error:&err];
+    NSArray *expectO = [O arrayByAddingObjectsFromArray:HK];
+    CHECK([l[@"mainland"] isEqualToArray:M] && [l[@"overseas"] isEqualToArray:expectO] && [l[@"version"] longLongValue] == 100, @"groups map: %@ %@", l, err);
+
+    NSMutableDictionary *t = [[NSJSONSerialization JSONObjectWithData:good options:0 error:nil] mutableCopy];
+    t[@"payload"] = SignedPayload(100, @"2026-10-23T00:00:00Z", @[ @"upos-evil.bilivideo.com" ], O, HK, AK);
+    CHECK([SignedError(JSONData(t), t0, 0, x963) containsString:@"签名无效"], @"tampered payload");
+    CHECK([SignedError(Envelope(SignedPayload(100, @"2026-10-23T00:00:00Z", M, O, HK, AK), other), t0, 0, x963) containsString:@"签名无效"], @"wrong key");
+    CHECK([SignedError(good, [t0 dateByAddingTimeInterval:15 * 86400], 0, x963) containsString:@"过期"], @"expired");
+    CHECK([SignedError(good, t0, 101, x963) containsString:@"旧"], @"older version");
+    CHECK([SignedError(Envelope(SignedPayload(1, @"2026-10-23T00:00:00Z", @[ @"1-2-3-4.mcdn.bilivideo.cn" ], O, HK, AK), key), t0, 0, x963) containsString:@"mcdn"], @"mcdn host");
+    CHECK([SignedError(Envelope(SignedPayload(1, @"2026-10-23T00:00:00Z", M, O, @[ @"upos-sz-mirrorali.bilivideo.com" ], AK), key), t0, 0, x963) containsString:@"hk"], @"hk shape");
+    CHECK([SignedError(Envelope(SignedPayload(1, @"2026-10-23T00:00:00Z", M, O, HK, @[ @"upos-sz-mirrorali.bilivideo.com" ]), key), t0, 0, x963) containsString:@"akamai"], @"akamai shape");
+    CHECK([SignedError(Envelope(SignedPayload(1, @"2026-10-23T00:00:00Z", @[], O, HK, AK), key), t0, 0, x963) containsString:@"大陆"], @"empty mainland");
+    NSMutableArray *many = [NSMutableArray array];
+    for (int i = 1; i <= 32; i++) [many addObject:[NSString stringWithFormat:@"cn-hk-eq-01-%d.bilivideo.com", i]];
+    CHECK([SignedError(Envelope(SignedPayload(1, @"2026-10-23T00:00:00Z", M, O, many, AK), key), t0, 0, x963) containsString:@"海外"], @"too many overseas");
+    CHECK([SignedError([@"<html>" dataUsingEncoding:NSUTF8StringEncoding], t0, 0, x963) containsString:@"不是签名列表"], @"html");
+    CHECK([SignedError(JSONData(@{ @"format": @"x" }), t0, 0, x963) containsString:@"格式"], @"format");
+
+    // Update order: signed list first; a bad signed list falls back to upstream; the highest
+    // signed version is remembered across restoreBuiltin.
+    NSString *suite = @"BTRTests.signed";
+    [[NSUserDefaults new] removePersistentDomainForName:suite];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    BTRNodeList *list = [[BTRNodeList alloc] initWithDefaults:d];
+    list.signedListKey = x963;
+    NSString *dir = NSTemporaryDirectory();
+    NSURL *(^file)(NSString *, NSData *) = ^NSURL *(NSString *name, NSData *data) {
+        NSURL *u = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:name]];
+        [data writeToURL:u atomically:YES];
+        return u;
+    };
+    NSURL *v5 = file(@"btr-signed-v5.json", Envelope(SignedPayload(5, @"2099-01-01T00:00:00Z", M, O, HK, AK), key));
+    NSURL *v3 = file(@"btr-signed-v3.json", Envelope(SignedPayload(3, @"2099-01-01T00:00:00Z", HK.count ? @[ @"upos-sz-mirrorcos.bilivideo.com" ] : M, O, HK, AK), key));
+    NSURL *fixture = [NSURL fileURLWithPath:[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"tests/fixtures/upstream-cdn-resolver.js"]];
+    __block BTRNodeUpdateResult *res = nil;
+    void (^run)(NSURL *, NSArray *) = ^(NSURL *signedURL, NSArray *ups) {
+        res = nil;
+        [list updateFromSignedURL:signedURL upstreamURLs:ups completion:^(BTRNodeUpdateResult *r) { res = r; }];
+        NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:30];
+        while (!res && [limit timeIntervalSinceNow] > 0) [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    };
+    run(v5, @[ fixture ]);
+    CHECK(res.ok && list.version == 5 && list.maxSignedVersion == 5 && [list.mainland isEqualToArray:M] && [list.overseas isEqualToArray:expectO]
+          && [list.sourceHost containsString:@"签名列表 v5"], @"signed first: %@ / %@", res.message, list.sourceHost);
+    BTRNodeList *reloaded = [[BTRNodeList alloc] initWithDefaults:d];
+    CHECK(reloaded.version == 5 && [reloaded.mainland isEqualToArray:M], @"signed list persisted");
+    run(v3, @[ fixture ]);
+    CHECK(res.ok && list.version == 0 && [res.message containsString:@"旧"] && list.mainland.count == 8, @"older signed list falls back to upstream: %@", res.message);
+    [list restoreBuiltin];
+    CHECK(list.isBuiltin && list.maxSignedVersion == 5, @"max signed version survives restore");
+    run(v3, @[]);
+    CHECK(!res.ok && list.isBuiltin, @"signed-only failure keeps current list: %@", res.message);
+    [[NSUserDefaults new] removePersistentDomainForName:suite];
+    [[NSUserDefaults new] removePersistentDomainForName:@"BTRTests.signed0"];
+    CFRelease(key);
+    CFRelease(other);
 }
 
 static BTRURLMapper TestMapper(void) {
@@ -585,6 +712,7 @@ int main(int argc, const char *argv[]) {
         [BTRNodeList.shared restoreBuiltin];
         TestCandidates();
         TestNodeList();
+        TestSignedNodeList();
         TestJSON();
         TestProtobuf();
         TestProxy();

@@ -5,7 +5,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-#define BTR_VERSION @"0.1.2"
+#define BTR_VERSION @"0.1.3"
 
 typedef NS_ENUM(NSInteger, BTRCDNMode) {
     BTRCDNModeMainland = 0, // 大陆 CDN（BTR 默认）
@@ -64,9 +64,10 @@ FOUNDATION_EXPORT void BTRLogClear(void);
 @property (nonatomic, copy) NSString *message; // Chinese, shown to the user
 @end
 
-/// The mainland / overseas CDN node lists. Built-in lists come from upstream BTR
-/// (src/cdn-resolver.js); "更新节点列表" re-reads that same file from GitHub (with jsDelivr
-/// mirrors as fallback), validates it and persists it. Any problem keeps the current lists.
+/// The mainland / overseas CDN node lists. Sources, in order: our signed list (MatchaCake/
+/// btr-cdn-list, probed daily; ECDSA P-256 signature checked with the embedded public key, must
+/// not be expired nor older than a version already used) → upstream BTR's src/cdn-resolver.js
+/// (GitHub, then jsDelivr mirrors) → the last good lists kept on disk → the built-in lists.
 @interface BTRNodeList : NSObject
 + (instancetype)shared;
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults NS_DESIGNATED_INITIALIZER;
@@ -75,23 +76,45 @@ FOUNDATION_EXPORT void BTRLogClear(void);
 @property (class, readonly) NSArray<NSString *> *builtinOverseas;
 /// Upstream file on raw.githubusercontent.com first, then jsDelivr mirrors.
 @property (class, readonly) NSArray<NSURL *> *sourceURLs;
+/// Our signed list.
+@property (class, readonly) NSURL *signedListURL;
+/// X9.63 public key (65 bytes) the signed list must verify against; the embedded one by default.
+@property (copy) NSData *signedListKey;
 @property (readonly) NSArray<NSString *> *mainland;
 @property (readonly) NSArray<NSString *> *overseas;
 @property (readonly) BOOL isBuiltin;
 @property (readonly, nullable) NSDate *updatedAt;
 @property (readonly, nullable) NSString *sourceHost;
-/// Only Bilibili's own node names may come from the network: *.bilivideo.com/.cn/.net and upos-*.akamaized.net.
+/// Version of the signed list in use (0 for upstream / built-in lists).
+@property (readonly) int64_t version;
+/// Highest signed version ever applied; never decreases (not even on restoreBuiltin).
+@property (readonly) int64_t maxSignedVersion;
+/// Only Bilibili's own node names: upos-*.bilivideo.com, cn-*.bilivideo.com, upos-*.akamaized.net.
+/// Never *.bilivideo.cn (<IP>.mcdn.bilivideo.cn names can point at third-party machines).
 + (BOOL)isAllowedNodeHost:(NSString *)host;
 /// Extracts MAINLAND_HOSTS / OVERSEAS_HOSTS from upstream cdn-resolver.js. Returns
 /// @{ @"mainland": …, @"overseas": … } or nil with a reason. Every entry must pass
 /// isAllowedNodeHost, each list must have 1…32 entries.
 + (nullable NSDictionary<NSString *, NSArray<NSString *> *> *)parseUpstreamSource:(NSString *)text error:(NSString *_Nullable *_Nullable)error;
+/// Verifies and parses our signed list. Returns @{ mainland, overseas (= overseas + hk groups),
+/// version (NSNumber), expiresAt (NSDate) } or nil with a reason.
++ (nullable NSDictionary *)parseSignedList:(NSData *)data now:(NSDate *)now minVersion:(int64_t)minVersion
+                                       key:(NSData *)x963Key error:(NSString *_Nullable *_Nullable)error;
 /// Validates, persists and applies new lists (takes effect for the next segment request).
 - (BTRNodeUpdateResult *)applyMainland:(NSArray<NSString *> *)mainland overseas:(NSArray<NSString *> *)overseas source:(nullable NSString *)sourceHost;
+- (BTRNodeUpdateResult *)applyMainland:(NSArray<NSString *> *)mainland overseas:(NSArray<NSString *> *)overseas source:(nullable NSString *)sourceHost
+                               version:(int64_t)version expiresAt:(nullable NSDate *)expiresAt;
 - (void)restoreBuiltin;
-/// Tries `urls` in order; completion runs on the main queue.
+/// Tries upstream `urls` in order; completion runs on the main queue.
 - (void)updateFromURLs:(NSArray<NSURL *> *)urls completion:(void (^)(BTRNodeUpdateResult *result))completion;
+/// Tries the signed list (if any), then upstream `urls` in order; completion runs on the main queue.
+- (void)updateFromSignedURL:(nullable NSURL *)signedURL upstreamURLs:(NSArray<NSURL *> *)urls
+                 completion:(void (^)(BTRNodeUpdateResult *result))completion;
+/// "更新节点列表": signed list, then upstream.
 - (void)updateWithCompletion:(void (^)(BTRNodeUpdateResult *result))completion;
+/// At most once a day, quietly fetch only the signed list in the background; failures keep the
+/// current lists.
+- (void)refreshSignedIfStale;
 /// "内置 · 大陆 8 / 海外 4" or "10-09 09:30 更新 · 大陆 8 / 海外 4".
 - (NSString *)summary;
 @end

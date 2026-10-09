@@ -13,7 +13,7 @@ xcrun --sdk iphoneos clang \
   -dynamiclib -fobjc-arc -fmodules -O2 -g0 -fvisibility=hidden \
   -Wall -Wextra -Wno-unused-parameter -Werror=incompatible-pointer-types -Werror=objc-method-access \
   -install_name "@rpath/BTR-iOS.dylib" \
-  -framework Foundation -framework UIKit -lz \
+  -framework Foundation -framework Security -framework UIKit -lz \
   src/BTRCore.m src/BTRRewriter.m src/BTRProxy.m src/BTRHooks.m src/BTRModelHooks.m src/BTRUI.m src/BTRTweak.m \
   -o "$OUT/BTR-iOS.dylib"
 

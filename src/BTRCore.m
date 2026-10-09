@@ -1,4 +1,5 @@
 #import "BTRCore.h"
+#import <Security/Security.h>
 
 NSString *BTRCDNModeName(BTRCDNMode mode) {
     switch (mode) {
@@ -65,7 +66,7 @@ static NSString *const kPrefix = @"BTRiOS.";
     NSMutableArray *out = [NSMutableArray array];
     for (id h in raw) {
         NSString *n = [h isKindOfClass:NSString.class] ? [BTRMedia normalizeHost:h] : nil;
-        if (n && ![out containsObject:n] && out.count < 32) [out addObject:n];
+        if (n && [BTRNodeList isAllowedNodeHost:n] && ![out containsObject:n] && out.count < 32) [out addObject:n];
     }
     return out;
 }
@@ -286,7 +287,8 @@ static BOOL MatchesHost(NSString *host) {
 + (NSString *)swapHost:(NSString *)url to:(NSString *)host allowAkamai:(BOOL)allowAkamai {
     if (!allowAkamai && [self isAkamaiURL:url]) return nil;
     NSString *h = host.lowercaseString;
-    if (![[self normalizeHost:h] isEqualToString:h]) return nil;
+    // Signed addresses only ever go to Bilibili's own named nodes (no *.bilivideo.cn / mcdn).
+    if (![[self normalizeHost:h] isEqualToString:h] || ![BTRNodeList isAllowedNodeHost:h]) return nil;
     NSURLComponents *c = [NSURLComponents componentsWithString:url];
     if (!c) return nil;
     c.scheme = @"https";
@@ -306,7 +308,11 @@ static void AddUnique(NSMutableArray *list, NSString *value) {
     if (mode == BTRCDNModeOriginal || !originals.count) return originals;
 
     NSMutableArray<NSString *> *custom = [NSMutableArray array];
-    if (mode == BTRCDNModeCustom) for (NSString *h in customHosts) AddUnique(custom, [self normalizeHost:h]);
+    if (mode == BTRCDNModeCustom)
+        for (NSString *h in customHosts) {
+            NSString *n = [self normalizeHost:h];
+            if (n && [BTRNodeList isAllowedNodeHost:n]) AddUnique(custom, n);
+        }
     NSArray<NSString *> *hosts = custom.count ? custom : (mode == BTRCDNModeOverseas ? self.overseasHosts : self.mainlandHosts);
 
     NSString *donor = nil;
@@ -355,14 +361,22 @@ static void AddUnique(NSMutableArray *list, NSString *value) {
 @end
 
 static NSString *const kNodesKey = @"BTRiOS.nodes";
+static NSString *const kMaxSignedVersionKey = @"BTRiOS.nodes.maxSignedVersion";
+static NSString *const kLastAutoRefreshKey = @"BTRiOS.nodes.lastAutoRefresh";
 static const NSUInteger kMaxNodesPerList = 32;
 static const NSUInteger kMaxSourceBytes = 512 * 1024;
+static const NSUInteger kMaxSignedBytes = 64 * 1024;
+static NSString *const kSignedLabel = @"签名列表";
+// ECDSA P-256 public key of MatchaCake/btr-cdn-list (X9.63 uncompressed point).
+static NSString *const kSignedListKeyB64 = @"BI8Hu7gO0/M8LWSbdL9Bpyl/k+9MYijJsHJ3JHciSZcueerxh0KnzY0b0M6A/1woozzMsWasQJG8F+6N7KFUoiQ=";
 
 @implementation BTRNodeList {
     NSUserDefaults *_d;
     NSArray<NSString *> *_mainland, *_overseas;
     NSDate *_updatedAt;
     NSString *_source;
+    int64_t _version;
+    NSData *_signedListKey;
 }
 
 + (instancetype)shared {
@@ -372,15 +386,26 @@ static const NSUInteger kMaxSourceBytes = 512 * 1024;
     return s;
 }
 
+/// Upstream BTR's nodes plus the ones verified working on 2026-10-09 (probed from Singapore and
+/// GitHub Actions with a real signed address; see btr-cdn-list).
 + (NSArray<NSString *> *)builtinMainland {
     return @[ @"upos-sz-mirrorali.bilivideo.com", @"upos-sz-mirrorhw.bilivideo.com", @"upos-sz-mirrorbos.bilivideo.com",
               @"upos-sz-mirror08c.bilivideo.com", @"upos-sz-mirrorbd.bilivideo.com", @"upos-sz-mirror14b.bilivideo.com",
-              @"upos-sz-estgoss.bilivideo.com", @"upos-sz-mirrorcos.bilivideo.com" ];
+              @"upos-sz-estgoss.bilivideo.com", @"upos-sz-mirrorcos.bilivideo.com", @"upos-sz-mirroralib.bilivideo.com",
+              @"upos-sz-mirrorhwb.bilivideo.com", @"upos-sz-mirrorhwo1.bilivideo.com", @"upos-sz-mirrorhwdisp.bilivideo.com",
+              @"upos-sz-mirror08h.bilivideo.com", @"upos-sz-mirror08ct.bilivideo.com", @"upos-sz-mirrorcosb.bilivideo.com",
+              @"upos-sz-mirrorcoso1.bilivideo.com", @"upos-sz-estghw.bilivideo.com", @"upos-sz-estgcos.bilivideo.com",
+              @"upos-sz-upcdnbda2.bilivideo.com", @"upos-tf-all-hw.bilivideo.com", @"upos-tf-all-tx.bilivideo.com",
+              @"upos-tf-all-ali.bilivideo.com" ];
 }
 
+/// The *ov nodes, then Hong Kong (cn-hk-eq-01-07 does not resolve).
 + (NSArray<NSString *> *)builtinOverseas {
-    return @[ @"upos-sz-mirrorcosov.bilivideo.com", @"upos-sz-mirroraliov.bilivideo.com",
-              @"cn-hk-eq-01-01.bilivideo.com", @"cn-hk-eq-01-03.bilivideo.com" ];
+    return @[ @"upos-sz-mirrorcosov.bilivideo.com", @"upos-sz-mirroraliov.bilivideo.com", @"cn-hk-eq-01-01.bilivideo.com",
+              @"cn-hk-eq-01-02.bilivideo.com", @"cn-hk-eq-01-03.bilivideo.com", @"cn-hk-eq-01-04.bilivideo.com",
+              @"cn-hk-eq-01-05.bilivideo.com", @"cn-hk-eq-01-06.bilivideo.com", @"cn-hk-eq-01-08.bilivideo.com",
+              @"cn-hk-eq-01-09.bilivideo.com", @"cn-hk-eq-01-10.bilivideo.com", @"cn-hk-eq-01-11.bilivideo.com",
+              @"cn-hk-eq-01-12.bilivideo.com", @"cn-hk-eq-01-13.bilivideo.com", @"cn-hk-eq-01-14.bilivideo.com" ];
 }
 
 + (NSArray<NSURL *> *)sourceURLs {
@@ -389,11 +414,18 @@ static const NSUInteger kMaxSourceBytes = 512 * 1024;
               [NSURL URLWithString:@"https://cdn.jsdelivr.net/gh/MrTangLuyao/Bilibili-thread-ripper@main/src/cdn-resolver.js"] ];
 }
 
++ (NSURL *)signedListURL { return [NSURL URLWithString:@"https://static.matchacake.net/c/n1.json"]; }
+
 + (BOOL)isAllowedNodeHost:(NSString *)host {
-    if (![host isKindOfClass:NSString.class] || ![[BTRMedia normalizeHost:host] isEqualToString:host]) return NO;
-    for (NSString *suffix in @[ @".bilivideo.com", @".bilivideo.cn", @".bilivideo.net" ])
-        if ([host hasSuffix:suffix]) return YES;
-    return [host hasPrefix:@"upos-"] && [host hasSuffix:@".akamaized.net"];
+    if (![host isKindOfClass:NSString.class] || !host.length || host.length > 253) return NO;
+    static NSRegularExpression *re;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        re = [NSRegularExpression regularExpressionWithPattern:
+              @"^(?:(?:upos|cn)-[a-z0-9]+(?:-[a-z0-9]+)*\\.bilivideo\\.com|upos-[a-z0-9]+(?:-[a-z0-9]+)*\\.akamaized\\.net)$"
+                                                       options:0 error:nil];
+    });
+    return [re firstMatchInString:host options:0 range:NSMakeRange(0, host.length)] != nil;
 }
 
 /// Clean, de-duplicated list or nil when any entry is not an allowed node / the size is off.
@@ -433,13 +465,93 @@ static NSArray<NSString *> *ValidList(id raw) {
     return out;
 }
 
+static NSDate *ParseISODate(id v) {
+    if (![v isKindOfClass:NSString.class]) return nil;
+    static NSISO8601DateFormatter *f;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ f = [NSISO8601DateFormatter new]; });
+    @synchronized (f) { return [f dateFromString:v]; }
+}
+
+static BOOL VerifyES256(NSData *message, NSData *derSignature, NSData *x963Key) {
+    if (x963Key.length != 65 || !derSignature.length) return NO;
+    NSDictionary *attrs = @{ (__bridge id)kSecAttrKeyType: (__bridge id)kSecAttrKeyTypeECSECPrimeRandom,
+                             (__bridge id)kSecAttrKeyClass: (__bridge id)kSecAttrKeyClassPublic,
+                             (__bridge id)kSecAttrKeySizeInBits: @256 };
+    CFErrorRef err = NULL;
+    SecKeyRef key = SecKeyCreateWithData((__bridge CFDataRef)x963Key, (__bridge CFDictionaryRef)attrs, &err);
+    if (!key) {
+        if (err) CFRelease(err);
+        return NO;
+    }
+    BOOL ok = SecKeyVerifySignature(key, kSecKeyAlgorithmECDSASignatureMessageX962SHA256,
+                                    (__bridge CFDataRef)message, (__bridge CFDataRef)derSignature, &err);
+    if (err) CFRelease(err);
+    CFRelease(key);
+    return ok;
+}
+
+#define SIGNED_FAIL(...) do { if (error) *error = (__VA_ARGS__); return nil; } while (0)
++ (NSDictionary *)parseSignedList:(NSData *)data now:(NSDate *)now minVersion:(int64_t)minVersion key:(NSData *)x963Key error:(NSString **)error {
+    if (![data isKindOfClass:NSData.class] || !data.length) SIGNED_FAIL(@"内容为空");
+    if (data.length > kMaxSignedBytes) SIGNED_FAIL(@"内容过大");
+    NSDictionary *env = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![env isKindOfClass:NSDictionary.class]) SIGNED_FAIL(@"不是签名列表");
+    if (![env[@"format"] isEqual:@"btr-cdn-list/1"] || ![env[@"alg"] isEqual:@"ES256"]) SIGNED_FAIL(@"签名列表格式不认识");
+    NSString *payloadText = env[@"payload"];
+    NSString *sigText = env[@"signature"];
+    if (![payloadText isKindOfClass:NSString.class] || ![sigText isKindOfClass:NSString.class] || !payloadText.length) SIGNED_FAIL(@"签名列表不完整");
+    NSData *payloadData = [payloadText dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *sig = [[NSData alloc] initWithBase64EncodedString:sigText options:0];
+    if (!VerifyES256(payloadData, sig, x963Key)) SIGNED_FAIL(@"签名无效");
+
+    NSDictionary *p = [NSJSONSerialization JSONObjectWithData:payloadData options:0 error:nil];
+    if (![p isKindOfClass:NSDictionary.class] || ![p[@"kind"] isEqual:@"btr-cdn-nodes"]) SIGNED_FAIL(@"签名列表内容不认识");
+    if (![p[@"version"] isKindOfClass:NSNumber.class] || [p[@"version"] longLongValue] <= 0) SIGNED_FAIL(@"版本号无效");
+    int64_t version = [p[@"version"] longLongValue];
+    NSDate *updated = ParseISODate(p[@"updated_at"]), *expires = ParseISODate(p[@"expires_at"]);
+    if (!updated || !expires || [expires compare:updated] != NSOrderedDescending) SIGNED_FAIL(@"时间字段无效");
+    if ([now compare:expires] != NSOrderedAscending) SIGNED_FAIL([NSString stringWithFormat:@"列表已过期（%@）", p[@"expires_at"]]);
+    if (version < minVersion) SIGNED_FAIL([NSString stringWithFormat:@"版本 %lld 比已用过的 %lld 旧", version, minVersion]);
+
+    NSDictionary *groups = p[@"groups"];
+    if (![groups isKindOfClass:NSDictionary.class]) SIGNED_FAIL(@"缺少分组");
+    NSArray *known = @[ @"mainland", @"overseas", @"hk", @"akamai" ];
+    for (NSString *k in groups) if (![known containsObject:k]) SIGNED_FAIL([NSString stringWithFormat:@"未知分组 %@", k]);
+    NSMutableDictionary<NSString *, NSArray *> *g = [NSMutableDictionary dictionary];
+    for (NSString *name in known) {
+        NSArray *list = groups[name];
+        if (![list isKindOfClass:NSArray.class]) SIGNED_FAIL([NSString stringWithFormat:@"缺少分组 %@", name]);
+        for (id h in list) {
+            BOOL ok = [self isAllowedNodeHost:h];
+            if (ok && [name isEqualToString:@"akamai"]) ok = [h hasSuffix:@".akamaized.net"];
+            else if (ok) ok = [h hasSuffix:@".bilivideo.com"] && (![name isEqualToString:@"hk"] || [h hasPrefix:@"cn-hk-"]);
+            if (!ok) {
+                NSString *shown = [h isKindOfClass:NSString.class] ? h : [h description];
+                SIGNED_FAIL([NSString stringWithFormat:@"%@ 里有不允许的主机：%@", name, shown.length > 80 ? [shown substringToIndex:80] : shown]);
+            }
+        }
+        g[name] = list;
+    }
+    NSArray *m = ValidList(g[@"mainland"]);
+    NSArray *o = ValidList([g[@"overseas"] arrayByAddingObjectsFromArray:g[@"hk"]]);
+    if (!m) SIGNED_FAIL([NSString stringWithFormat:@"大陆节点为空或超过 %lu 个", (unsigned long)kMaxNodesPerList]);
+    if (!o) SIGNED_FAIL([NSString stringWithFormat:@"海外节点为空或超过 %lu 个", (unsigned long)kMaxNodesPerList]);
+    return @{ @"mainland": m, @"overseas": o, @"version": @(version), @"expiresAt": expires };
+}
+#undef SIGNED_FAIL
+
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults {
     if ((self = [super init])) {
         _d = defaults;
+        _signedListKey = [[NSData alloc] initWithBase64EncodedString:kSignedListKeyB64 options:0];
         [self load];
     }
     return self;
 }
+
+- (NSData *)signedListKey { @synchronized (self) { return _signedListKey; } }
+- (void)setSignedListKey:(NSData *)key { @synchronized (self) { _signedListKey = [key copy]; } }
 
 - (void)load {
     NSDictionary *saved = [_d objectForKey:kNodesKey];
@@ -455,11 +567,13 @@ static NSArray<NSString *> *ValidList(id raw) {
             _overseas = o;
             _updatedAt = [saved[@"updatedAt"] isKindOfClass:NSDate.class] ? saved[@"updatedAt"] : nil;
             _source = [saved[@"source"] isKindOfClass:NSString.class] ? saved[@"source"] : nil;
+            _version = [saved[@"version"] isKindOfClass:NSNumber.class] ? [saved[@"version"] longLongValue] : 0;
         } else {
             _mainland = BTRNodeList.builtinMainland;
             _overseas = BTRNodeList.builtinOverseas;
             _updatedAt = nil;
             _source = nil;
+            _version = 0;
         }
     }
 }
@@ -469,6 +583,8 @@ static NSArray<NSString *> *ValidList(id raw) {
 - (NSDate *)updatedAt { @synchronized (self) { return _updatedAt; } }
 - (NSString *)sourceHost { @synchronized (self) { return _source; } }
 - (BOOL)isBuiltin { @synchronized (self) { return _updatedAt == nil; } }
+- (int64_t)version { @synchronized (self) { return _version; } }
+- (int64_t)maxSignedVersion { return [[_d objectForKey:kMaxSignedVersionKey] longLongValue]; }
 
 static NSInteger Missing(NSArray *from, NSArray *in) {
     NSInteger n = 0;
@@ -477,6 +593,11 @@ static NSInteger Missing(NSArray *from, NSArray *in) {
 }
 
 - (BTRNodeUpdateResult *)applyMainland:(NSArray<NSString *> *)mainland overseas:(NSArray<NSString *> *)overseas source:(NSString *)sourceHost {
+    return [self applyMainland:mainland overseas:overseas source:sourceHost version:0 expiresAt:nil];
+}
+
+- (BTRNodeUpdateResult *)applyMainland:(NSArray<NSString *> *)mainland overseas:(NSArray<NSString *> *)overseas source:(NSString *)sourceHost
+                               version:(int64_t)version expiresAt:(NSDate *)expiresAt {
     BTRNodeUpdateResult *r = [BTRNodeUpdateResult new];
     NSArray *m = ValidList(mainland), *o = ValidList(overseas);
     if (!m || !o) {
@@ -485,12 +606,19 @@ static NSInteger Missing(NSArray *from, NSArray *in) {
     }
     NSArray *oldM = self.mainland, *oldO = self.overseas;
     NSDate *now = NSDate.date;
-    [_d setObject:@{ @"mainland": m, @"overseas": o, @"updatedAt": now, @"source": sourceHost ?: @"" } forKey:kNodesKey];
+    NSMutableDictionary *rec = [@{ @"mainland": m, @"overseas": o, @"updatedAt": now, @"source": sourceHost ?: @"" } mutableCopy];
+    if (version > 0) {
+        rec[@"version"] = @(version);
+        if (expiresAt) rec[@"expiresAt"] = expiresAt;
+    }
     @synchronized (self) {
+        [_d setObject:rec forKey:kNodesKey];
+        if (version > [[_d objectForKey:kMaxSignedVersionKey] longLongValue]) [_d setObject:@(version) forKey:kMaxSignedVersionKey];
         _mainland = m;
         _overseas = o;
         _updatedAt = now;
         _source = sourceHost;
+        _version = version;
     }
     r.ok = YES;
     r.added = Missing(m, oldM) + Missing(o, oldO);
@@ -509,27 +637,36 @@ static NSInteger Missing(NSArray *from, NSArray *in) {
 }
 
 - (void)updateFromURLs:(NSArray<NSURL *> *)urls completion:(void (^)(BTRNodeUpdateResult *))completion {
+    [self updateFromSignedURL:nil upstreamURLs:urls completion:completion];
+}
+
+- (void)updateFromSignedURL:(NSURL *)signedURL upstreamURLs:(NSArray<NSURL *> *)urls completion:(void (^)(BTRNodeUpdateResult *))completion {
     NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
     cfg.timeoutIntervalForRequest = 10;
     cfg.timeoutIntervalForResource = 20;
     cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    cfg.HTTPShouldSetCookies = NO;
     NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-    [self tryURLs:urls index:0 session:session errors:[NSMutableArray array] completion:^(BTRNodeUpdateResult *r) {
+    NSMutableArray<NSArray *> *sources = [NSMutableArray array];
+    if (signedURL) [sources addObject:@[ signedURL, @YES ]];
+    for (NSURL *u in urls) [sources addObject:@[ u, @NO ]];
+    [self trySources:sources index:0 session:session errors:[NSMutableArray array] completion:^(BTRNodeUpdateResult *r) {
         [session finishTasksAndInvalidate];
         dispatch_async(dispatch_get_main_queue(), ^{ completion(r); });
     }];
 }
 
-- (void)tryURLs:(NSArray<NSURL *> *)urls index:(NSUInteger)i session:(NSURLSession *)session errors:(NSMutableArray<NSString *> *)errors
-     completion:(void (^)(BTRNodeUpdateResult *))completion {
-    if (i >= urls.count) {
+- (void)trySources:(NSArray<NSArray *> *)sources index:(NSUInteger)i session:(NSURLSession *)session errors:(NSMutableArray<NSString *> *)errors
+        completion:(void (^)(BTRNodeUpdateResult *))completion {
+    if (i >= sources.count) {
         BTRNodeUpdateResult *r = [BTRNodeUpdateResult new];
         r.message = [NSString stringWithFormat:@"更新失败，继续使用当前列表。\n%@", [errors componentsJoinedByString:@"\n"]];
         BTRLog(@"节点列表更新失败：%@", [errors componentsJoinedByString:@"；"]);
         completion(r);
         return;
     }
-    NSURL *url = urls[i];
+    NSURL *url = sources[i][0];
+    BOOL isSigned = [sources[i][1] boolValue];
     NSString *label = url.host.length ? url.host : url.lastPathComponent;
     [[session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
         NSString *why = nil;
@@ -541,24 +678,39 @@ static NSInteger Missing(NSArray *from, NSArray *in) {
         NSInteger status = [resp isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)resp).statusCode : 0;
         if (err) why = err.localizedDescription;
         else if (!fileOK && status != 200) why = [NSString stringWithFormat:@"HTTP %ld", (long)status];
-        else if (data.length > kMaxSourceBytes) why = @"内容过大";
-        else {
+        else if (data.length > (isSigned ? kMaxSignedBytes : kMaxSourceBytes)) why = @"内容过大";
+        else if (isSigned) {
+            NSString *parseError = nil;
+            lists = [BTRNodeList parseSignedList:data now:NSDate.date minVersion:self.maxSignedVersion key:self.signedListKey error:&parseError];
+            if (!lists) why = parseError ?: @"无法解析";
+        } else {
             NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
             NSString *parseError = nil;
             lists = [BTRNodeList parseUpstreamSource:text error:&parseError];
             if (!lists) why = parseError ?: @"无法解析";
         }
         if (lists) {
-            completion([self applyMainland:lists[@"mainland"] overseas:lists[@"overseas"] source:label]);
+            NSString *source = isSigned ? [NSString stringWithFormat:@"%@ v%@（%@）", kSignedLabel, lists[@"version"], label] : label;
+            BTRNodeUpdateResult *r = [self applyMainland:lists[@"mainland"] overseas:lists[@"overseas"] source:source
+                                                 version:[lists[@"version"] longLongValue] expiresAt:lists[@"expiresAt"]];
+            if (r.ok && errors.count) r.message = [r.message stringByAppendingFormat:@"\n（%@）", [errors componentsJoinedByString:@"；"]];
+            completion(r);
         } else {
-            [errors addObject:[NSString stringWithFormat:@"%@：%@", label, why]];
-            [self tryURLs:urls index:i + 1 session:session errors:errors completion:completion];
+            [errors addObject:[NSString stringWithFormat:@"%@%@：%@", isSigned ? [kSignedLabel stringByAppendingString:@" "] : @"", label, why]];
+            [self trySources:sources index:i + 1 session:session errors:errors completion:completion];
         }
     }] resume];
 }
 
 - (void)updateWithCompletion:(void (^)(BTRNodeUpdateResult *))completion {
-    [self updateFromURLs:BTRNodeList.sourceURLs completion:completion];
+    [self updateFromSignedURL:BTRNodeList.signedListURL upstreamURLs:BTRNodeList.sourceURLs completion:completion];
+}
+
+- (void)refreshSignedIfStale {
+    NSDate *last = [_d objectForKey:kLastAutoRefreshKey];
+    if ([last isKindOfClass:NSDate.class] && -[last timeIntervalSinceNow] < 24 * 3600) return;
+    [_d setObject:NSDate.date forKey:kLastAutoRefreshKey];
+    [self updateFromSignedURL:BTRNodeList.signedListURL upstreamURLs:@[] completion:^(BTRNodeUpdateResult *r) {}];
 }
 
 - (NSString *)summary {

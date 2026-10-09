@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build
 xcrun clang -fobjc-arc -fmodules -DBTR_TESTING -O1 -g -Wall -Wno-unused-parameter \
-  -framework Foundation -lz \
+  -framework Foundation -framework Security -lz \
   src/BTRCore.m src/BTRRewriter.m src/BTRProxy.m src/BTRHooks.m src/BTRModelHooks.m tests/BTRTests.m \
   -o build/BTRTests
 

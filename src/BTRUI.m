@@ -137,7 +137,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == BTRSectionSwitches) return @"改动从下一次打开视频（下一次获取播放地址）开始生效。";
-    if (section == BTRSectionCDN) return @"“更新节点列表”从原项目 GitHub 仓库（失败时用 jsDelivr 镜像）读取最新的大陆 / 海外节点表，只接受 B 站自己的节点域名，立即生效；失败时保留当前列表。";
+    if (section == BTRSectionCDN) return @"“更新节点列表”先读取我们每天实测、带签名的节点表（验签、未过期、不比已用的旧），失败时改读原项目 GitHub 仓库（再失败用 jsDelivr 镜像），立即生效；都失败时保留当前列表。只接受 upos-*/cn-*.bilivideo.com 和 upos-*.akamaized.net。每天也会在后台自动取一次签名节点表。";
     if (section == BTRSectionDiag) return @"播放一个视频后看这里：“播放地址回复”为 0 说明 App 没走被接管的接口；“播放器地址”里出现“已走 BTR”说明播放器在用本地代理。反馈问题时请在“诊断”页点分享，日志会一起导出。";
     if (section == BTRSectionMore) return @"移植自 MrTangLuyao/Bilibili-thread-ripper（MIT）。非官方实验项目，不绕过会员、登录、地区或清晰度限制。";
     return nil;
@@ -297,7 +297,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
             }];
         } else if (ip.row == 1) {
             UIAlertController *a = [UIAlertController alertControllerWithTitle:@"自定义节点"
-                                                                       message:@"只接受 B 站视频服务器（bilivideo.com、akamaized.net 等），用逗号或换行分隔，最多 32 个。CDN 模式选“自定义”时生效，一个都没有时按大陆 CDN。"
+                                                                       message:@"只接受 B 站自己的节点：upos-*.bilivideo.com、cn-*.bilivideo.com、upos-*.akamaized.net，用逗号或换行分隔，最多 32 个。CDN 模式选“自定义”时生效，一个都没有时按大陆 CDN。"
                                                                 preferredStyle:UIAlertControllerStyleAlert];
             [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
                 f.text = [s.customHosts componentsJoinedByString:@", "];
@@ -311,7 +311,7 @@ typedef NS_ENUM(NSInteger, BTRSection) { BTRSectionSwitches, BTRSectionCDN, BTRS
                 NSMutableArray *hosts = [NSMutableArray array];
                 for (NSString *part in [text componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@",，\n "]]) {
                     NSString *h = [BTRMedia normalizeHost:part];
-                    if (h && ![hosts containsObject:h]) [hosts addObject:h];
+                    if (h && [BTRNodeList isAllowedNodeHost:h] && ![hosts containsObject:h]) [hosts addObject:h];
                 }
                 s.customHosts = hosts;
                 BTRLog(@"自定义节点：%@", [hosts componentsJoinedByString:@", "]);
