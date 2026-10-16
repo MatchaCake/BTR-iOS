@@ -40,6 +40,7 @@ jobs:
           echo "version=${v}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: BTR-iOS-dylib
           path: build/BTR-iOS.dylib
           if-no-files-found: error
